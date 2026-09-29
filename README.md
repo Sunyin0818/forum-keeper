@@ -39,8 +39,8 @@ https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx
 ### 3. 配置并启动
 
 ```bash
-cp .env.example .env
-$EDITOR .env          # 至少填 V2EX_TOKEN 和 FEISHU_WEBHOOK
+./scripts/init-env.sh   # 从 .env.example 生成 .env（已存在则拒绝覆盖）
+$EDITOR .env            # 至少填 V2EX_TOKEN 和 FEISHU_WEBHOOK
 ```
 
 ```bash
@@ -218,8 +218,10 @@ set -a; . ./.env; set +a
 
 ## 开发
 
+**没有 make 也能用**：
+
 ```bash
-# 没有 make 也能用
+./scripts/init-env.sh   # 生成 .env（0600 权限，已存在则不覆盖）
 ./scripts/dry-run.sh
 ./scripts/smoke.sh
 
