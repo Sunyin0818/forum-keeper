@@ -245,10 +245,14 @@ test （gofmt / go vet / go test -race / 离线端到端 smoke / 编译）
 
 | 触发 | 产生的 tag |
 |---|---|
-| push 到 `main` | `latest`、`sha-<短哈希>` |
-| push tag `v1.2.3` | `1.2.3`、`1.2`、`1`、`latest`、`sha-<短哈希>` |
+| push 到 `main` | `main`、`sha-<短哈希>` |
+| push tag `v1.2.3` | `1.2.3`、`1.2`、`1`、`latest` |
 | Pull Request | 只跑 `test`，不推镜像 |
 | 手动 `workflow_dispatch` | 同上 |
+
+> **`latest` 只在发版本 tag 时移动。** 如果 main 推送也更新 `latest`，
+> 分支和 tag 两个 run 会并发写同一个 tag 而互相覆盖，`latest` 可能停在
+> 未发布的提交上。想跑最新代码用 `:main` 或 `:sha-xxxxxxx`。
 
 镜像平台：`linux/amd64` + `linux/arm64`，附带 provenance 和 SBOM。
 
