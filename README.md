@@ -232,6 +232,90 @@ set -a; . ./.env; set +a
 ./bin/notifier --once     # 单次
 ```
 
+## 自动构建并发布镜像
+
+`.github/workflows/ci.yml` 做了两件事：
+
+```
+test （gofmt / go vet / go test -race / 离线端到端 smoke / 编译）
+  └─ image （多架构构建 + 推送，PR 跳过）
+```
+
+### 触发与产物
+
+| 触发 | 产生的 tag |
+|---|---|
+| push 到 `main` | `latest`、`sha-<短哈希>` |
+| push tag `v1.2.3` | `1.2.3`、`1.2`、`1`、`latest`、`sha-<短哈希>` |
+| Pull Request | 只跑 `test`，不推镜像 |
+| 手动 `workflow_dispatch` | 同上 |
+
+镜像平台：`linux/amd64` + `linux/arm64`，附带 provenance 和 SBOM。
+
+> 构建器不跑 QEMU：`Dockerfile` 里 builder 阶段用 `--platform=$BUILDPLATFORM`
+> 加 Go 交叉编译（`TARGETOS`/`TARGETARCH`），所以 arm64 镜像不需要在模拟器里
+> 重编译整个 Go 工具链，构建快很多。
+
+### 发版
+
+```bash
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin main --tags
+```
+
+推送后 GitHub Actions 会自动出镜像，`-X main.version=v1.0.0` 会被烤进二进制
+（`--version` 可验证）。
+
+### 镜像仓库
+
+**默认发到 GHCR，不需要任何配置**（用内置的 `GITHUB_TOKEN`）：
+
+```
+ghcr.io/sunyin0818/v2ex-notifier:latest
+```
+
+> 首次推送后，包默认是 private。要在别的机器上拉取，去 GitHub →
+> 你的头像 → Packages → 该 package → Package settings → Change visibility
+> 改为 public（或 `docker login ghcr.io`）。
+
+**可选：同时发 Docker Hub。** 在仓库 Settings → Secrets and variables →
+Actions 里加两个 secret，workflow 会自动多推一份；没设就跳过：
+
+| Secret | 值 |
+|---|---|
+| `DOCKERHUB_USERNAME` | 你的 Docker Hub 用户名 |
+| `DOCKERHUB_TOKEN` | Docker Hub **Access Token**（不是登录密码） |
+
+> GHCR 在国内部分网络下较慢，如果拉取是瓶颈，用 Docker Hub 或自建 registry 更实际。
+
+### 跑已发布的镜像
+
+```bash
+docker run -d --name v2ex-notifier --restart unless-stopped \
+  --env-file .env \
+  -e STATE_PATH=/data/state.db \
+  -e V2EX_PROXY=http://host.docker.internal:7897 \
+  --add-host host.docker.internal:host-gateway \
+  -v v2ex-notifier-data:/data \
+  ghcr.io/sunyin0818/v2ex-notifier:latest
+```
+
+或者仍用 compose，通过环境变量换成远端镜像：
+
+```bash
+echo 'V2EX_NOTIFIER_IMAGE=ghcr.io/sunyin0818/v2ex-notifier:latest' >> .env
+podman compose pull && podman compose up -d --no-build
+```
+
+### 发布前检查
+
+workflow 会在 `test` job 卡住以下情况，不通过就不出镜像：
+
+- `gofmt -l` 非空
+- `go vet` 报错
+- 单测失败（含 `-race`）
+- `scripts/smoke.sh` 端到端失败
+
 ## 开发
 
 **没有 make 也能用**：

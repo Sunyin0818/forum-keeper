@@ -5,7 +5,10 @@ services:
       args:
         VERSION: ${VERSION:-dev}
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
-    image: v2ex-notifier:latest
+    # Local builds win by default. To run a published image instead, set
+    #   V2EX_NOTIFIER_IMAGE=ghcr.io/sunyin0818/v2ex-notifier:latest
+    # and use `compose pull` + `compose up --no-build`.
+    image: ${V2EX_NOTIFIER_IMAGE:-v2ex-notifier:latest}
     container_name: v2ex-notifier
     restart: unless-stopped
     env_file:
