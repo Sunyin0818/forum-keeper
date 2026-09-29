@@ -8,3 +8,4 @@ data/
 state.db
 notifier
 bin/
+deploy/

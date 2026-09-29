@@ -1,0 +1,32 @@
+# Cloud deployment bundle.
+#
+# Copy this directory to the server, fill in env, then:
+#   docker compose pull && docker compose up -d
+#
+# Different from the repo's compose.yaml on purpose:
+#   - no `build:` - the server pulls the published image
+#   - image is pinned to a version, not `latest`
+#   - no V2EX_PROXY / proxy defaults: a cloud VM reaches v2ex.com directly.
+#     (Setting a proxy here to a local-machine address is the #1 silent failure.)
+services:
+  notifier:
+    # Pin a version so a restart cannot silently change the running code.
+    # Upgrade by editing this line, then `docker compose pull && up -d`.
+    image: ghcr.io/sunyin0818/v2ex-notifier:0.1.0
+    container_name: v2ex-notifier
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STATE_PATH: /data/state.db
+      # Podman copies the host's *_proxy vars into containers; on a server they
+      # would be stale. Clear them so nothing is inherited implicitly.
+      http_proxy: ""
+      https_proxy: ""
+      # Timestamps in the startup card and logs.
+      TZ: Asia/Shanghai
+    volumes:
+      # Persistent: losing it resets the dedup baseline.
+      - notifier-data:/data
+
+volumes:
+  notifier-data:

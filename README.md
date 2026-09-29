@@ -348,6 +348,25 @@ echo 'V2EX_NOTIFIER_IMAGE=ghcr.io/sunyin0818/v2ex-notifier:latest' >> .env
 podman compose pull && podman compose up -d --no-build
 ```
 
+### 清理旧 tag
+
+GHCR 是按 **manifest** 删版本的，不是按 tag。多个 tag 经常指向同一个 manifest
+（实测 `0` / `0.1` / `0.1.0` / `latest` / `sha-81f53dc` 五者共用一个 digest），
+所以“删掉那个 `sha-` tag”会连发布版一起删掉。
+
+`scripts/ghcr-prune.sh` 只删**不含任何发布 tag** 的 manifest，并在预演时把
+“和发布 tag 共用 manifest 的旧 tag”列出来警告：
+
+```bash
+./scripts/ghcr-prune.sh                                     # 预演（匿名只读，无需令牌）
+
+# 实际删除需要 delete:packages 权限
+# classic PAT: 勾选 delete:packages
+# fine-grained PAT: Packages -> Read and write
+GHCR_TOKEN=<token> ./scripts/ghcr-prune.sh --apply
+# 装了 gh 也可以： GHCR_TOKEN=$(gh auth token) ./scripts/ghcr-prune.sh --apply
+```
+
 ### 发布前检查
 
 workflow 会在 `test` job 卡住以下情况，不通过就不出镜像：
@@ -359,56 +378,31 @@ workflow 会在 `test` job 卡住以下情况，不通过就不出镜像：
 
 ## 部署到云端服务器
 
-云端不要用本地的 `compose.yaml` 默认值 —— 它带 `host.docker.internal:7897`
-这类本地约定。最小可用的一份：
+云端**不要**用仓库根目录的 `compose.yaml` —— 它是为本地开发的（`build:`、
+`extra_hosts: host.docker.internal`）。`deploy/` 里有一份自包含的云端包：
 
-```yaml
-# /opt/v2ex-notifier/compose.yaml
-services:
-  notifier:
-    image: ghcr.io/sunyin0818/v2ex-notifier:0.1.0   # 钉版本，别用 latest
-    container_name: v2ex-notifier
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      STATE_PATH: /data/state.db
-      TZ: Asia/Shanghai        # 启动卡片上的时间
-    volumes:
-      - notifier-data:/data    # 必须是持久卷，否则重启丢去重状态
-volumes:
-  notifier-data:
+```
+deploy/
+├── compose.yaml    # 钉版本拉镜像，无代理配置，TZ，持久卷
+├── env.example     # 只有 V2EX_TOKEN / FEISHU_WEBHOOK / FEISHU_SECRET
+└── README.md       # 三步部署 + 排查表
 ```
 
 ```bash
-# /opt/v2ex-notifier/.env  —— 云端仅这三行即可
-V2EX_TOKEN=...
-FEISHU_WEBHOOK=...
-FEISHU_SECRET=...          # 机器人开了签名校验才需要
-
-# 注意：不要写 HTTPS_PROXY，云端直连 v2ex.com
+scp -r deploy/ server:/opt/v2ex-notifier/
+ssh server 'cd /opt/v2ex-notifier && cp env.example .env && chmod 600 .env && $EDITOR .env'
+ssh server 'cd /opt/v2ex-notifier && docker compose pull && docker compose up -d'
 ```
 
-```bash
-docker compose pull && docker compose up -d
-docker compose logs -f
-```
-
-### 几个容易踩的点
+关键约定（细节见 `deploy/README.md`）：
 
 | 点 | 说明 |
 |---|---|
-| **钉版本，不用 `latest`** | `latest` 会随时变动，重启可能就换了代码。写死 `:0.1.0`，升级时改成 `:0.2.0` 再 pull。 |
-| **不要设 `HTTPS_PROXY`** | 填了本地那个代理地址会连不上 v2ex.com（且容器内 `127.0.0.1` 也不是宿主机），表现为 `dial tcp ... timeout`。 |
-| **`/data` 要持久卷** | 丢了不会刷屏（首轮只记录），但去重基准会重置，期间离线时的提醒可能不会被推。 |
-| **`TZ` 建议显式设置** | Podman 会挂载宿主机 `/etc/localtime`，Docker **不会**，不设就是 UTC。 |
-| **重启自动拉起** | `restart: unless-stopped` 已包含；docker daemon 开机启动即可。 |
-| **升级方式** | 改 `.env`/compose 里的版本号 → `docker compose pull && docker compose up -d`。状态卷不受影响。 |
-| **registry 选哪个** | 海外机器 GHCR 直连没问题；国内机器 GHCR 可能很慢，建议配 Docker Hub（见上）或自建 registry。 |
-
-### 首次部署不会刷屏
-
-新卷上第一次启动会走 `FIRST_RUN=skip`：把当前未读提醒全部标记为已见但不推送，
-只出一张 🟢 启动卡片。之后只推真正的新提醒。
+| **钉版本，不用 `latest`** | `restart: unless-stopped` 下重启不该悄悄换代码。升级时改 tag 再 pull。 |
+| **不设 `HTTPS_PROXY`** | 云端直连 v2ex.com。填了本地地址会静默连不上。 |
+| **`/data` 必须是持久卷** | 丢了会重置去重基准。 |
+| **`TZ` 显式设置** | Podman 挂载宿主机 `/etc/localtime`，Docker 不挂，不设就是 UTC。 |
+| **首次部署不刷屏** | `FIRST_RUN=skip` 只记录不推送，只出一张 🟢 启动卡片。 |
 
 ## 开发
 
