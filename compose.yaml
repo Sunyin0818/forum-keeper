@@ -14,11 +14,12 @@ services:
     env_file:
       - .env
     environment:
-      # Always keep state on the mounted volume.
+      # Container-internal path; always on the mounted volume.
       STATE_PATH: /data/state.db
-      # Container-friendly default; override in .env when your setup differs
-      # (e.g. podman users may prefer http://host.containers.internal:7897).
-      V2EX_PROXY: ${V2EX_PROXY:-http://host.docker.internal:7897}
+      # V2EX_PROXY is deliberately NOT defaulted here. Its correct value is
+      # environment-specific: a laptop needs the Clash proxy on the host, while
+      # a cloud VM reaches v2ex.com directly. A wrong default fails silently, so
+      # keep it in .env (or pass -e V2EX_PROXY=... explicitly).
     volumes:
       - notifier-data:/data
     extra_hosts:

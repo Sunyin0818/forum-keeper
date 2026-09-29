@@ -206,13 +206,18 @@ HTTP client：
 - `V2EX_PROXY` 只作用于 V2EX 请求，留空则使用系统环境变量代理
 - 飞书请求显式禁用代理
 
-因此 `V2EX_PROXY` 在 `.env.example` 里是**注释掉**的：
+因此 `V2EX_PROXY` **只在 `.env` 里配置**，`compose.yaml` 不给默认值 —— 它必须区分环境：
 
-- **本地运行**：不设置 → 走系统代理（或直连）
-- **容器运行**：`compose.yaml` 自动注入默认值 `http://host.docker.internal:7897`；
-  要改就在 `.env` 里显式设置即可
+| 环境 | `V2EX_PROXY` |
+|---|---|
+| 本地笔记本（走 Clash） | `http://host.docker.internal:7897` |
+| 云端服务器（直连 v2ex.com） | 留空（或不写这一行） |
 
-容器访问宿主机代理的地址：
+> 为什么不在 compose 里填个默认值？因为默认值必然只对一半环境正确，
+> 另一半会**静默走一个不存在的代理**，表现为一直拉不到提醒、日志里
+> `dial tcp ... timeout`。配置放 `.env` 里，两种环境各写各的。
+
+本地容器访问宿主机代理的地址：
 
 | 运行时 | 地址 |
 |---|---|
@@ -221,7 +226,7 @@ HTTP client：
 | 两者通用、最省事 | `--network=host` + `http://127.0.0.1:7897` |
 
 `compose.yaml` 已配置 `extra_hosts: host.docker.internal:host-gateway`，
-Docker 与 Podman 均可解析。
+Docker 与 Podman 均可解析。云端用不到这行，但也无害。
 
 ## 不使用容器
 
@@ -243,16 +248,21 @@ test （gofmt / go vet / go test -race / 离线端到端 smoke / 编译）
 
 ### 触发与产物
 
-| 触发 | 产生的 tag |
+| 触发 | 产生什么 |
 |---|---|
-| push 到 `main` | `main`、`sha-<短哈希>` |
-| push tag `v1.2.3` | `1.2.3`、`1.2`、`1`、`latest` |
-| Pull Request | 只跑 `test`，不推镜像 |
-| 手动 `workflow_dispatch` | 同上 |
+| push 到 `main` | 只跑 `test`，**不出镜像** |
+| push tag `v1.2.3` | 镜像 `1.2.3`、`1.2`、`1`、`latest` |
+| push tag `v0.2.0` | 镜像 `0.2.0`、`0.2`、`latest`（没 `0`，见下） |
+| push tag `v0.2.0-rc1` | 镜像 `0.2.0-rc1`（预发布**不加** `latest`） |
+| Pull Request | 只跑 `test` |
+| 手动 `workflow_dispatch` | 只跑 `test` |
 
-> **`latest` 只在发版本 tag 时移动。** 如果 main 推送也更新 `latest`，
-> 分支和 tag 两个 run 会并发写同一个 tag 而互相覆盖，`latest` 可能停在
-> 未发布的提交上。想跑最新代码用 `:main` 或 `:sha-xxxxxxx`。
+两个约定：
+
+- **0.x 不生成 `0` 别名。** semver 规定 `0.y.z` 明确不稳定，浮动 `0` 会误导；
+  上 1.0 后把这行的 `enable` 去掉即可。
+- **预发布不加 `latest`。** 靠 `flavor: latest=auto` 实现；`v0.2.0-rc1`
+  只会得到 `0.2.0-rc1`，不会抢走 `latest`。
 
 镜像平台：`linux/amd64` + `linux/arm64`，附带 provenance 和 SBOM。
 
@@ -272,16 +282,13 @@ git push origin main --tags
 
 > **为什么一次发版看起来跑了两个 CI？**
 > `git push origin main --tags` 是**两个** push 事件：分支一个、tag 一个，
-> 各自触发一次 workflow。这是故意的 —— 两者产出不同：
+> 各自触发一次 workflow。这是故意的：分支那次是快速门禁（只跑 test，
+> 约 1 分钟），tag 那次才构建并推镜像（约 1.5 分钟）。
 >
-> | run | 产出 |
-> |---|---|
-> | `push · main` | `main`、`sha-<短哈希>`，版本号是完整 SHA |
-> | `push · v1.0.0` | `1.0.0`、`1.0`、`1`、`latest`，版本号是 `v1.0.0` |
+> 同一个 commit 只被构建**一次**，不会重复。如果只想让 tag 那次跑，
+> 就分两次推：先 `git push origin main`，确认绿了再 `git push origin v1.0.0`。
 >
-> 如果只想让 tag 那次跑，就分两次推：先 `git push origin main`，
-> 确认 CI 绿了再 `git push origin v1.0.0`。run 标题已经带上 ref
-> （`ci · push · main` / `ci · push · v1.0.0`）以便区分。
+> run 标题带 ref（`ci · push · main` / `ci · push · v1.0.0`）以便区分。
 
 ### 镜像仓库
 
@@ -332,6 +339,59 @@ workflow 会在 `test` job 卡住以下情况，不通过就不出镜像：
 - `go vet` 报错
 - 单测失败（含 `-race`）
 - `scripts/smoke.sh` 端到端失败
+
+## 部署到云端服务器
+
+云端不要用本地的 `compose.yaml` 默认值 —— 它带 `host.docker.internal:7897`
+这类本地约定。最小可用的一份：
+
+```yaml
+# /opt/v2ex-notifier/compose.yaml
+services:
+  notifier:
+    image: ghcr.io/sunyin0818/v2ex-notifier:0.1.0   # 钉版本，别用 latest
+    container_name: v2ex-notifier
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STATE_PATH: /data/state.db
+      TZ: Asia/Shanghai        # 启动卡片上的时间
+    volumes:
+      - notifier-data:/data    # 必须是持久卷，否则重启丢去重状态
+volumes:
+  notifier-data:
+```
+
+```bash
+# /opt/v2ex-notifier/.env  —— 云端仅这三行即可
+V2EX_TOKEN=...
+FEISHU_WEBHOOK=...
+FEISHU_SECRET=...          # 机器人开了签名校验才需要
+
+# 注意：不要写 V2EX_PROXY，云端直连 v2ex.com
+```
+
+```bash
+docker compose pull && docker compose up -d
+docker compose logs -f
+```
+
+### 几个容易踩的点
+
+| 点 | 说明 |
+|---|---|
+| **钉版本，不用 `latest`** | `latest` 会随时变动，重启可能就换了代码。写死 `:0.1.0`，升级时改成 `:0.2.0` 再 pull。 |
+| **`V2EX_PROXY` 留空** | 填了本地那个代理地址会连不上 v2ex.com，表现为日志 `dial tcp ... timeout`。 |
+| **`/data` 要持久卷** | 丢了不会刷屏（首轮只记录），但去重基准会重置，期间离线时的提醒可能不会被推。 |
+| **`TZ` 建议显式设置** | Podman 会挂载宿主机 `/etc/localtime`，Docker **不会**，不设就是 UTC。 |
+| **重启自动拉起** | `restart: unless-stopped` 已包含；docker daemon 开机启动即可。 |
+| **升级方式** | 改 `.env`/compose 里的版本号 → `docker compose pull && docker compose up -d`。状态卷不受影响。 |
+| **registry 选哪个** | 海外机器 GHCR 直连没问题；国内机器 GHCR 可能很慢，建议配 Docker Hub（见上）或自建 registry。 |
+
+### 首次部署不会刷屏
+
+新卷上第一次启动会走 `FIRST_RUN=skip`：把当前未读提醒全部标记为已见但不推送，
+只出一张 🟢 启动卡片。之后只推真正的新提醒。
 
 ## 开发
 

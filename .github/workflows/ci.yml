@@ -58,7 +58,10 @@ jobs:
 
   image:
     needs: test
-    if: github.event_name != 'pull_request'
+    # Images are cut from version tags only. Building on every main push would
+    # rebuild the same source a second time whenever a tag points at a commit
+    # that is already on main, and the two runs would race for shared tags.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -123,19 +126,16 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.images.outputs.list }}
+          flavor: |
+            # With type=semver this adds `latest` for releases but *not* for
+            # pre-releases such as v0.2.0-rc1, which is what we want.
+            latest=auto
           tags: |
-            type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # `sha-<commit>` only from branch pushes. A tag pointing at a commit
-            # already on main would otherwise emit the same sha tag from two
-            # runs, and they would overwrite each other.
-            type=sha,format=short,prefix=sha-,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
-            # `latest` moves only on a version tag. Letting main pushes move it
-            # too means two concurrent runs race for the same tag, so `latest`
-            # could end up pointing at an unreleased commit.
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # semver says 0.y.z is explicitly unstable, so a floating `0`
+            # alias would be misleading. Re-enable once we ship 1.0.
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -146,7 +146,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+            # This job only runs on a v* tag, so the tag name is the version.
+            VERSION=${{ github.ref_name }}
             GOPROXY=https://proxy.golang.org,direct
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -163,5 +164,5 @@ jobs:
             echo '```'
             echo
             echo "Platforms: \`linux/amd64, linux/arm64\`"
-            echo "Version baked in: \`${{ github.ref_type == 'tag' && github.ref_name || github.sha }}\`"
+            echo "Version baked in: \`${{ github.ref_name }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
