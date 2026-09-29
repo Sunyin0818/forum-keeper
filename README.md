@@ -270,6 +270,19 @@ git push origin main --tags
 推送后 GitHub Actions 会自动出镜像，`-X main.version=v1.0.0` 会被烤进二进制
 （`--version` 可验证）。
 
+> **为什么一次发版看起来跑了两个 CI？**
+> `git push origin main --tags` 是**两个** push 事件：分支一个、tag 一个，
+> 各自触发一次 workflow。这是故意的 —— 两者产出不同：
+>
+> | run | 产出 |
+> |---|---|
+> | `push · main` | `main`、`sha-<短哈希>`，版本号是完整 SHA |
+> | `push · v1.0.0` | `1.0.0`、`1.0`、`1`、`latest`，版本号是 `v1.0.0` |
+>
+> 如果只想让 tag 那次跑，就分两次推：先 `git push origin main`，
+> 确认 CI 绿了再 `git push origin v1.0.0`。run 标题已经带上 ref
+> （`ci · push · main` / `ci · push · v1.0.0`）以便区分。
+
 ### 镜像仓库
 
 **默认发到 GHCR，不需要任何配置**（用内置的 `GITHUB_TOKEN`）：
