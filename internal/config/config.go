@@ -24,7 +24,6 @@ type Config struct {
 	// V2EX / source
 	V2EXToken   string
 	V2EXBaseURL string
-	V2EXProxy   string        // optional HTTP(S) proxy for v2ex.com
 	HTTPTimeout time.Duration // per-request timeout
 	MaxPages    int           // how many notification pages to walk per poll
 
@@ -52,7 +51,6 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		V2EXToken:     envStr("V2EX_TOKEN", ""),
 		V2EXBaseURL:   strings.TrimRight(envStr("V2EX_BASE_URL", DefaultBaseURL), "/"),
-		V2EXProxy:     envStr("V2EX_PROXY", ""),
 		FeishuWebhook: envStr("FEISHU_WEBHOOK", ""),
 		FeishuSecret:  envStr("FEISHU_SECRET", ""),
 		StatePath:     envStr("STATE_PATH", "state.db"),

@@ -30,11 +30,10 @@ echo "==> building notifier"
 export V2EX_BASE_URL="$BASE/api/v2"
 export V2EX_TOKEN="smoke-token"
 export FEISHU_WEBHOOK="$BASE/hook"
-export V2EX_PROXY=""
 export STATE_PATH="$WORK/state.db"
 export FIRST_RUN=skip
 export LOG_LEVEL=warn
-# Keep the mock traffic off any system-wide proxy.
+# Keep the mock traffic off any system-wide proxy (CI runners often have one set).
 export NO_PROXY="127.0.0.1,localhost"
 export no_proxy="127.0.0.1,localhost"
 

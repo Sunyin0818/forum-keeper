@@ -104,3 +104,20 @@ func TestSendRetriesOnServerError(t *testing.T) {
 		t.Fatalf("expected 2 attempts, got %d", got)
 	}
 }
+
+// Feishu must be reached directly. If it inherited a proxy, every notification
+// would fail on hosts where the proxy cannot reach open.feishu.cn - and the
+// failure would look like a Feishu outage rather than a config error.
+func TestClientIgnoresEnvironmentProxy(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://proxy.example:3128")
+	t.Setenv("HTTP_PROXY", "http://proxy.example:3128")
+
+	c := NewClient("https://open.feishu.cn/open-apis/bot/v2/hook/example", "", time.Second)
+	tr, ok := c.hc.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.hc.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Fatal("feishu client must not use environment proxies")
+	}
+}

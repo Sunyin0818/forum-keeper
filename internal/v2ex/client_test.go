@@ -25,7 +25,7 @@ func TestNotificationsParsesResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := NewClient("tok", srv.URL, "", 5*time.Second)
+	c, err := NewClient("tok", srv.URL, 5*time.Second)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestUnauthorizedIsNotRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := NewClient("bad", srv.URL, "", 5*time.Second)
+	c, err := NewClient("bad", srv.URL, 5*time.Second)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestServerErrorIsRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := NewClient("tok", srv.URL, "", 5*time.Second)
+	c, err := NewClient("tok", srv.URL, 5*time.Second)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -91,8 +91,19 @@ func TestServerErrorIsRetried(t *testing.T) {
 	}
 }
 
-func TestNewClientRejectsBadProxy(t *testing.T) {
-	if _, err := NewClient("tok", "https://www.v2ex.com/api/v2", "://bad", time.Second); err == nil {
-		t.Fatal("expected error for invalid proxy URL")
+// Proxying is not configurable per-client: the v2ex client must honour the
+// standard environment variables, so this asserts the transport still wires up
+// http.ProxyFromEnvironment rather than silently going direct.
+func TestClientDefersProxyingToEnvironment(t *testing.T) {
+	c, err := NewClient("tok", "https://www.v2ex.com/api/v2", time.Second)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	tr, ok := c.hc.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.hc.Transport)
+	}
+	if tr.Proxy == nil {
+		t.Fatal("v2ex client must honour HTTPS_PROXY/HTTP_PROXY/NO_PROXY")
 	}
 }

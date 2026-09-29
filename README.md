@@ -68,7 +68,7 @@ docker compose logs -f      # 或 podman compose logs -f
 | `FEISHU_WEBHOOK` | — | **必填**，飞书机器人 webhook |
 | `FEISHU_SECRET` | 空 | 开启了签名校验时必填 |
 | `POLL_INTERVAL` | `60s` | 轮询间隔，最小 `5s` |
-| `V2EX_PROXY` | 空 | 仅 v2ex.com 走此代理；飞书始终直连 |
+| `HTTPS_PROXY` | 空 | 仅 v2ex.com 走此代理；飞书始终直连（标准变量） |
 | `FIRST_RUN` | `skip` | `skip` 首轮只记录不推送；`push` 全推 |
 | `MARK_READ` | `false` | 推送成功后调用 `DELETE /notifications/:id` |
 | `FILTER_TYPES` | 空 | 只推指定类型：`reply,mention,thanks,other` |
@@ -200,22 +200,34 @@ set -a; . ./.env; set +a
 
 ## 代理说明
 
-`v2ex.com` 在国内访问不稳定，而 `open.feishu.cn` 需要直连。本服务用两个独立的
-HTTP client：
+`v2ex.com` 从很多网络直接不可达（实测：DNS 把 `www.v2ex.com` 解析到
+`2a03:2880:...`，那是 Facebook 的 IPv6 段，典型污染），而 `open.feishu.cn` 需要直连。做法：
 
-- `V2EX_PROXY` 只作用于 V2EX 请求，留空则使用系统环境变量代理
-- 飞书请求显式禁用代理
+- **V2EX 请求**读标准环境变量 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`
+- **飞书请求**显式禁用代理（`Proxy: nil`，有单测守着）
 
-因此 `V2EX_PROXY` **只在 `.env` 里配置**，`compose.yaml` 不给默认值 —— 它必须区分环境：
+没有自定义代理变量 —— 少一个容易配错的旋钮。`compose.yaml` 也不给默认值，
+完全由 `.env` 决定：
 
-| 环境 | `V2EX_PROXY` |
+| 环境 | `.env` 里 |
 |---|---|
-| 本地笔记本（走 Clash） | `http://host.docker.internal:7897` |
-| 云端服务器（直连 v2ex.com） | 留空（或不写这一行） |
+| 本地笔记本（走 Clash） | `HTTPS_PROXY=http://host.docker.internal:7897` |
+| 云端服务器（直连 v2ex.com） | 不写这一行 |
 
-> 为什么不在 compose 里填个默认值？因为默认值必然只对一半环境正确，
-> 另一半会**静默走一个不存在的代理**，表现为一直拉不到提醒、日志里
-> `dial tcp ... timeout`。配置放 `.env` 里，两种环境各写各的。
+### 两个坑
+
+**1. 容器里不能用 `127.0.0.1`。** 容器内的 `127.0.0.1` 是容器自己，不是宿主机。
+必须用 `host.docker.internal`（Docker）/ `host.containers.internal`（Podman），
+或者用 `--network=host` 配 `127.0.0.1`。
+
+**2. podman 会把宿主机的 `*_proxy` 变量复制进容器。** 宿主机上的
+`https_proxy=http://127.0.0.1:7897` 会被原样带进去，而那个地址在容器里指向容器自己 ——
+表现是“代理明明配了却连不上”。`compose.yaml` 里显式把继承来的小写
+`http_proxy` / `https_proxy` 清空，只让 `.env` 生效。Docker 没有这个行为，
+两边因此表现一致。
+
+> Go 的 `httpproxy` 取 `HTTPS_PROXY` 优先于 `https_proxy`，所以即使 podman 注入了错的小写值，
+> 显式设置的大写值仍然生效 —— 这一点已在容器内实测，不是推测。
 
 本地容器访问宿主机代理的地址：
 
@@ -318,7 +330,7 @@ Actions 里加两个 secret，workflow 会自动多推一份；没设就跳过�
 docker run -d --name v2ex-notifier --restart unless-stopped \
   --env-file .env \
   -e STATE_PATH=/data/state.db \
-  -e V2EX_PROXY=http://host.docker.internal:7897 \
+  -e HTTPS_PROXY=http://host.docker.internal:7897 \
   --add-host host.docker.internal:host-gateway \
   -v v2ex-notifier-data:/data \
   ghcr.io/sunyin0818/v2ex-notifier:latest
@@ -368,7 +380,7 @@ V2EX_TOKEN=...
 FEISHU_WEBHOOK=...
 FEISHU_SECRET=...          # 机器人开了签名校验才需要
 
-# 注意：不要写 V2EX_PROXY，云端直连 v2ex.com
+# 注意：不要写 HTTPS_PROXY，云端直连 v2ex.com
 ```
 
 ```bash
@@ -381,7 +393,7 @@ docker compose logs -f
 | 点 | 说明 |
 |---|---|
 | **钉版本，不用 `latest`** | `latest` 会随时变动，重启可能就换了代码。写死 `:0.1.0`，升级时改成 `:0.2.0` 再 pull。 |
-| **`V2EX_PROXY` 留空** | 填了本地那个代理地址会连不上 v2ex.com，表现为日志 `dial tcp ... timeout`。 |
+| **不要设 `HTTPS_PROXY`** | 填了本地那个代理地址会连不上 v2ex.com（且容器内 `127.0.0.1` 也不是宿主机），表现为 `dial tcp ... timeout`。 |
 | **`/data` 要持久卷** | 丢了不会刷屏（首轮只记录），但去重基准会重置，期间离线时的提醒可能不会被推。 |
 | **`TZ` 建议显式设置** | Podman 会挂载宿主机 `/etc/localtime`，Docker **不会**，不设就是 UTC。 |
 | **重启自动拉起** | `restart: unless-stopped` 已包含；docker daemon 开机启动即可。 |
@@ -421,7 +433,8 @@ go build -o bin/notifier ./cmd/notifier   # 等价 make build
 开启了签名校验但没填 `FEISHU_SECRET`，或 secret 复制错了。
 
 **日志 `poll failed: ... dial tcp ... timeout`**
-V2EX 不可达。检查 `V2EX_PROXY` 是否指向可用的代理，以及代理节点本身是否正常。
+V2EX 不可达。检查 `HTTPS_PROXY` 是否指向可用的代理、地址是否是 `host.docker.internal`
+（不是 `127.0.0.1`），以及代理节点本身是否正常。
 
 **一直没有推送**
 确认 `FIRST_RUN` 的行为：首次启动默认只记录不推送。看 `LOG_LEVEL=debug` 的日志确认是否真的没有新提醒。

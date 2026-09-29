@@ -41,11 +41,13 @@ type Client struct {
 	rate RateLimit
 }
 
-// NewClient builds a client for the given base URL. When proxyURL is empty the
-// standard environment proxy variables are honoured; otherwise the given proxy
-// is used exclusively. This lets v2ex.com tunnel through a local proxy while
-// other clients (Feishu) stay direct.
-func NewClient(token, baseURL, proxyURL string, timeout time.Duration) (*Client, error) {
+// NewClient builds a client for the given base URL.
+//
+// Proxying is left entirely to the standard environment variables
+// (HTTPS_PROXY / HTTP_PROXY / NO_PROXY) via http.ProxyFromEnvironment. There is
+// deliberately no bespoke proxy option: one fewer knob to get wrong, and the
+// host/container address of a proxy differs per environment anyway.
+func NewClient(token, baseURL string, timeout time.Duration) (*Client, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 	if baseURL == "" {
 		return nil, errors.New("v2ex: base URL must not be empty")
@@ -68,13 +70,6 @@ func NewClient(token, baseURL, proxyURL string, timeout time.Duration) (*Client,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-	}
-	if proxyURL != "" {
-		u, err := url.Parse(proxyURL)
-		if err != nil {
-			return nil, fmt.Errorf("v2ex: invalid V2EX_PROXY %q: %w", proxyURL, err)
-		}
-		transport.Proxy = http.ProxyURL(u)
 	}
 
 	return &Client{

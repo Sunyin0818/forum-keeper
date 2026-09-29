@@ -16,10 +16,15 @@ services:
     environment:
       # Container-internal path; always on the mounted volume.
       STATE_PATH: /data/state.db
-      # V2EX_PROXY is deliberately NOT defaulted here. Its correct value is
-      # environment-specific: a laptop needs the Clash proxy on the host, while
-      # a cloud VM reaches v2ex.com directly. A wrong default fails silently, so
-      # keep it in .env (or pass -e V2EX_PROXY=... explicitly).
+      # Podman copies the host's *_proxy variables into containers, where
+      # 127.0.0.1 means the container itself - a silently wrong value that looks
+      # like a V2EX outage. Docker does not copy them. Clear the inherited
+      # lowercase forms so the explicit config in .env is the only source.
+      http_proxy: ""
+      https_proxy: ""
+      # HTTPS_PROXY has no default here on purpose: the right value is
+      # environment-specific. Set HTTPS_PROXY in .env for a local Clash proxy,
+      # or leave it unset on a cloud VM that reaches v2ex.com directly.
     volumes:
       - notifier-data:/data
     extra_hosts:

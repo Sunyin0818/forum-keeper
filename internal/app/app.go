@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -71,7 +72,7 @@ type App struct {
 // New builds an App from configuration, opening the state database and HTTP
 // clients.
 func New(cfg *config.Config, logger *slog.Logger, dryRun bool) (*App, error) {
-	src, err := v2ex.NewClient(cfg.V2EXToken, cfg.V2EXBaseURL, cfg.V2EXProxy, cfg.HTTPTimeout)
+	src, err := v2ex.NewClient(cfg.V2EXToken, cfg.V2EXBaseURL, cfg.HTTPTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +179,7 @@ func (a *App) startupLines() []string {
 		"首轮策略: "+a.cfg.FirstRun,
 		"标记已读: "+yesNo(a.cfg.MarkRead),
 		"类型过滤: "+filterLabel(a.cfg.FilterTypes),
-		"V2EX 代理: "+proxyLabel(a.cfg.V2EXProxy),
+		"V2EX 代理: "+proxyLabel(),
 		"状态文件: "+a.cfg.StatePath,
 	)
 	return lines
@@ -447,11 +448,15 @@ func filterLabel(types []string) string {
 	return strings.Join(types, ", ")
 }
 
-// proxyLabel deliberately reports only whether a proxy is configured: the URL
-// may embed credentials and would otherwise end up in the Feishu message.
-func proxyLabel(proxy string) string {
-	if strings.TrimSpace(proxy) == "" {
-		return "未设置（走系统代理或直连）"
+// proxyLabel reports whether a proxy is configured for outgoing V2EX requests,
+// and which standard variable supplied it. Only the variable *name* is reported:
+// its value may embed credentials and would otherwise end up in the Feishu
+// message as plain text.
+func proxyLabel() string {
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return "已设置（" + key + "）"
+		}
 	}
-	return "已设置"
+	return "未设置（直连）"
 }

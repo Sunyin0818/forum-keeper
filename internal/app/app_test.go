@@ -487,10 +487,9 @@ func TestNotifyStartupDryRunSendsNothing(t *testing.T) {
 }
 
 func TestStartupLinesDoNotLeakProxyCredentials(t *testing.T) {
-	cfg := baseConfig()
-	cfg.V2EXProxy = "http://alice:s3cret@proxy.internal:7897"
+	t.Setenv("HTTPS_PROXY", "http://alice:s3cret@proxy.internal:7897")
 
-	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, newFakeState(), &fakeNotifier{})
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, newFakeState(), &fakeNotifier{})
 	lines := strings.Join(a.startupLines(), "\n")
 
 	for _, secret := range []string{"alice", "s3cret", "proxy.internal"} {
@@ -500,5 +499,9 @@ func TestStartupLinesDoNotLeakProxyCredentials(t *testing.T) {
 	}
 	if !strings.Contains(lines, "V2EX 代理: 已设置") {
 		t.Fatalf("proxy should be reported as configured:\n%s", lines)
+	}
+	// Report which variable supplied it - the name is useful, the value is not.
+	if !strings.Contains(lines, "HTTPS_PROXY") {
+		t.Fatalf("proxy label should name the variable:\n%s", lines)
 	}
 }
