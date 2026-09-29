@@ -250,6 +250,15 @@ func (a *App) PollOnce(ctx context.Context) (int, error) {
 	if count == 0 && a.cfg.FirstRun == config.FirstRunSkip {
 		if a.dryRun {
 			a.log.Info("dry-run: first run would record existing notifications without pushing", "count", len(ids))
+			for _, it := range items {
+				a.log.Info("dry-run: would record (not push)",
+					"id", it.ID,
+					"member", it.Member.Username,
+					"text", it.Text,
+					"topic", feishu.TopicID(it),
+					"created", time.Unix(it.Created, 0).Format(time.RFC3339),
+				)
+			}
 			return 0, nil
 		}
 		a.log.Info("first run: recording existing notifications without pushing", "count", len(ids))
@@ -303,6 +312,9 @@ func (a *App) PollOnce(ctx context.Context) (int, error) {
 	if err := a.bot.Notify(ctx, fresh); err != nil {
 		return 0, fmt.Errorf("push notifications: %w", err)
 	}
+
+	// Log here rather than in pollAndLog so --once reports pushes too.
+	a.log.Info("pushed notifications", "count", len(fresh))
 
 	// Persist only after a successful push: a failing webhook is retried on the
 	// next poll instead of being silently dropped.
@@ -375,7 +387,7 @@ func (a *App) passFilter(it v2ex.Notification) bool {
 }
 
 func (a *App) pollAndLog(ctx context.Context) {
-	n, err := a.PollOnce(ctx)
+	_, err := a.PollOnce(ctx)
 	if err != nil {
 		a.failures++
 		a.log.Error("poll failed", "err", err, "consecutive_failures", a.failures)
@@ -385,9 +397,6 @@ func (a *App) pollAndLog(ctx context.Context) {
 	if a.failures > 0 {
 		a.log.Info("recovered after failures", "previous_failures", a.failures)
 		a.failures = 0
-	}
-	if n > 0 {
-		a.log.Info("pushed notifications", "count", n)
 	}
 	if rl, ok := a.src.(rateLimiter); ok {
 		if r := rl.RateLimit(); r.Limit > 0 {

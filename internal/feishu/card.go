@@ -21,14 +21,17 @@ const (
 	KindOther   = "other"
 )
 
-// KindOf classifies a notification by its human readable text.
+// KindOf classifies a notification by its human readable text. The text field
+// is an HTML fragment (e.g. `<a ...>alice</a> 在 <a ...>标题</a> 里回复了你`),
+// so it is stripped before matching.
 func KindOf(text string) string {
+	t := StripHTML(text)
 	switch {
-	case strings.Contains(text, "感谢"):
+	case strings.Contains(t, "感谢"):
 		return KindThanks
-	case strings.Contains(text, "提到"):
+	case strings.Contains(t, "提到"):
 		return KindMention
-	case strings.Contains(text, "回复"):
+	case strings.Contains(t, "回复"):
 		return KindReply
 	default:
 		return KindOther
@@ -37,22 +40,34 @@ func KindOf(text string) string {
 
 type kindStyle struct {
 	emoji    string
-	label    string
-	noun     string
+	noun     string // aggregate title: "12 条回复"
+	action   string // single title / body line: "回复了你"
 	template string
 }
 
 func styleFor(kind string) kindStyle {
 	switch kind {
 	case KindReply:
-		return kindStyle{emoji: "💬", label: "回复了你", noun: "回复", template: "blue"}
+		return kindStyle{emoji: "💬", noun: "回复", action: "回复了你", template: "blue"}
 	case KindMention:
-		return kindStyle{emoji: "📣", label: "提到了你", noun: "提及", template: "orange"}
+		return kindStyle{emoji: "📣", noun: "提及", action: "在回复中提到了你", template: "orange"}
 	case KindThanks:
-		return kindStyle{emoji: "🙏", label: "感谢了你", noun: "感谢", template: "green"}
+		return kindStyle{emoji: "🙏", noun: "感谢", action: "感谢了你的主题", template: "green"}
 	default:
-		return kindStyle{emoji: "🔔", label: "新提醒", noun: "提醒", template: "grey"}
+		return kindStyle{emoji: "🔔", noun: "提醒", action: "", template: "grey"}
 	}
+}
+
+// actionLabel is a short description of what happened. It never contains the
+// raw `text` HTML: unknown kinds fall back to the stripped text.
+func actionLabel(it v2ex.Notification) string {
+	if a := styleFor(KindOf(it.Text)).action; a != "" {
+		return a
+	}
+	if s := StripHTML(it.Text); s != "" {
+		return truncate(s, 60)
+	}
+	return "有新的提醒"
 }
 
 // --- card schema -----------------------------------------------------------
@@ -134,11 +149,7 @@ func BuildCard(items []v2ex.Notification, titles map[int]string) Card {
 	template := "blue"
 	title := fmt.Sprintf("🔔 V2EX · %d 条新提醒", len(items))
 	if len(items) == 1 {
-		label := items[0].Text
-		if strings.TrimSpace(label) == "" {
-			label = style.label
-		}
-		title = fmt.Sprintf("%s V2EX · %s", style.emoji, label)
+		title = fmt.Sprintf("%s V2EX · %s", style.emoji, actionLabel(items[0]))
 	} else if sameKind {
 		title = fmt.Sprintf("%s V2EX · %d 条%s", style.emoji, len(items), style.noun)
 	}
@@ -204,17 +215,19 @@ func notificationElement(it v2ex.Notification, titles map[int]string) *DivElemen
 	sb.WriteString("**@")
 	sb.WriteString(user)
 	sb.WriteString("** ")
-	label := it.Text
-	if strings.TrimSpace(label) == "" {
-		label = styleFor(KindOf(it.Text)).label
-	}
-	sb.WriteString(label)
+	sb.WriteString(actionLabel(it))
 
 	topicID := TopicID(it)
 	if topicID > 0 {
-		if t := strings.TrimSpace(titles[topicID]); t != "" {
+		// Prefer the title already embedded in the notification; fall back to
+		// the one fetched via the API.
+		title := TopicTitleFromText(it.Text)
+		if title == "" {
+			title = strings.TrimSpace(titles[topicID])
+		}
+		if title != "" {
 			sb.WriteString("\n📄 ")
-			sb.WriteString(escapeMarkdown(t))
+			sb.WriteString(escapeMarkdown(title))
 		}
 	}
 	if s := Snippet(it); s != "" {
@@ -239,7 +252,25 @@ func notificationElement(it v2ex.Notification, titles map[int]string) *DivElemen
 var (
 	tagRe   = regexp.MustCompile(`(?s)<[^>]*>`)
 	topicRe = regexp.MustCompile(`/(?:t|topic|topics)/(\d+)`)
+	linkRe  = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
 )
+
+// TopicTitleFromText extracts the topic title from a notification's `text`
+// field, which embeds it as `<a ... class="topic-link">TITLE</a>`.
+//
+// V2EX already sends the title here, so this avoids a GET /topics/:id round
+// trip (and its rate limit cost) for the common case.
+func TopicTitleFromText(text string) string {
+	for _, m := range linkRe.FindAllStringSubmatch(text, -1) {
+		if !strings.Contains(m[1], "topic-link") {
+			continue
+		}
+		if title := StripHTML(m[2]); title != "" {
+			return title
+		}
+	}
+	return ""
+}
 
 // TopicID extracts the topic ID referenced by a notification, or 0.
 func TopicID(it v2ex.Notification) int {
@@ -255,13 +286,22 @@ func TopicID(it v2ex.Notification) int {
 }
 
 // Snippet returns a plain-text excerpt of the notification body.
+//
+// `payload` is already plain text and reads best; `payload_rendered` is HTML
+// whose tags would leave stray spaces (`@<a ...>Sunyin</a>` -> `@ Sunyin`).
+// Prefer the former, unless it is just a link/path rather than content.
 func Snippet(it v2ex.Notification) string {
-	for _, raw := range []string{it.PayloadRendered, it.Payload} {
-		if s := StripHTML(raw); s != "" {
-			return truncate(s, 140)
-		}
+	if p := normalizeText(it.Payload); p != "" && !looksLikeLink(p) {
+		return truncate(p, 140)
+	}
+	if s := StripHTML(it.PayloadRendered); s != "" {
+		return truncate(s, 140)
 	}
 	return ""
+}
+
+func looksLikeLink(s string) bool {
+	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
 // StripHTML removes tags and collapses whitespace.
@@ -269,9 +309,12 @@ func StripHTML(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return ""
 	}
-	s = tagRe.ReplaceAllString(s, " ")
-	s = html.UnescapeString(s)
-	return strings.Join(strings.Fields(s), " ")
+	return normalizeText(tagRe.ReplaceAllString(s, " "))
+}
+
+// normalizeText unescapes entities and collapses all whitespace runs.
+func normalizeText(s string) string {
+	return strings.Join(strings.Fields(html.UnescapeString(s)), " ")
 }
 
 // escapeMarkdown neutralises lark_md syntax that could break card rendering.

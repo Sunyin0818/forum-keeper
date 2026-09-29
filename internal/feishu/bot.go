@@ -49,14 +49,21 @@ func (b *Bot) Startup(ctx context.Context, lines []string) error {
 
 // resolveTitles lazily looks up topic titles, tolerating failures: a missing
 // title is not worth failing the whole notification.
+//
+// V2EX embeds the title in the notification's `text` field, so the API is only
+// consulted when that is missing.
 func (b *Bot) resolveTitles(ctx context.Context, items []v2ex.Notification) map[int]string {
-	if b.topics == nil {
-		return nil
-	}
 	out := make(map[int]string, len(items))
 	for _, it := range items {
 		id := TopicID(it)
 		if id <= 0 {
+			continue
+		}
+		if t := TopicTitleFromText(it.Text); t != "" {
+			out[id] = t
+			continue
+		}
+		if b.topics == nil {
 			continue
 		}
 		if t, ok := b.cached(id); ok {

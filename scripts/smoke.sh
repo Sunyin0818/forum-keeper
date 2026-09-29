@@ -81,5 +81,15 @@ assert "https://www.v2ex.com/t/555" in first, first
 assert "dave" in second, second
 assert deleted == [4], "expected [4] deleted, got %s" % deleted
 
-print("smoke OK: startup card + 2 notification cards, topic title resolved, 1 marked read")
+# Real V2EX notifications carry an HTML fragment in `text`. None of that markup
+# may reach the card.
+for name, payload in (("startup", startup), ("carol", first), ("dave", second)):
+    for bad in ("<a ", "</a>", "<strong>", "topic-link", "target="):
+        assert bad not in payload, "%s card leaked markup %r: %s" % (name, bad, payload)
+
+# The action label must be the derived short phrase, not the raw text.
+assert "感谢了你的主题" in first, first
+assert "回复了你" in second, second
+
+print("smoke OK: startup card + 2 notification cards, no HTML leaked, 1 marked read")
 PY

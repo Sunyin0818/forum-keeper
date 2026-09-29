@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Mock V2EX API 2.0 + Feishu webhook for offline smoke testing.
 
+The fixtures deliberately mirror the *real* V2EX response shape, including the
+fact that `text` is an HTML fragment and that `member` only carries a username.
+Feeding idealized plain-text fixtures hides rendering bugs, so don't simplify
+these.
+
 Endpoints:
   GET    /api/v2/member
   GET    /api/v2/notifications?p=N   (a new notification appears on every poll)
@@ -16,34 +21,54 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATE = {"polls": 0, "hooks": [], "deleted": []}
 
-FIXTURES = [
-    (1, "alice", "回复了你的主题", "/t/555#reply1"),
-    (2, "bob", "在回复中提到了你", "/t/555#reply2"),
-    (3, "carol", "感谢了你的主题", "/t/555#reply3"),
-    (4, "dave", "回复了你的主题", "/t/555#reply4"),
-]
+TOPIC_ID = 555
+TOPIC_TITLE = "关于 xxx 的讨论"
 
 
-def notification(nid, user, text, payload):
+def notification(nid, user, action, reply_body, *, topic_link=True, topic_id=TOPIC_ID):
+    """Build a notification shaped exactly like the real API returns."""
+    member_link = '<a href="/member/{u}" target="_blank"><strong>{u}</strong></a>'.format(u=user)
+    if topic_link:
+        topic_anchor = ' 在 <a href="/t/{t}#reply{n}" class="topic-link">{title}</a>'.format(
+            t=topic_id, n=nid, title=TOPIC_TITLE
+        )
+    else:
+        topic_anchor = " "
     return {
         "id": nid,
         "member_id": 100 + nid,
         "for_member_id": 1,
-        "text": text,
-        "payload": payload,
-        "payload_rendered": '<a href="/member/%s">@%s</a> 我也遇到过同样的问题' % (user, user),
+        "text": member_link + topic_anchor + action,
+        "payload": reply_body,
+        "payload_rendered": '@<a href="/member/Sunyin">Sunyin</a> ' + reply_body,
         "created": 1700000000 + nid,
-        "member": {"id": 100 + nid, "username": user, "url": "/member/" + user},
+        # Real responses only include the username here.
+        "member": {"username": user},
     }
+
+
+# (id, member, action, reply body, has topic link)
+FIXTURES = [
+    (1, "alice", "回复了你", "我也遇到过同样的问题", True),
+    (2, "bob", "在回复中提到了你", "顺便问一下 @Sunyin 后来解决了吗？", True),
+    (3, "carol", "感谢了你的主题", "感谢分享", True),
+    (4, "dave", "回复了你", "按的时候屏幕是不是会闪一下？", True),
+]
+
+
+def fixture(index):
+    """Build FIXTURES[index]; the 5th element selects the topic-link variant."""
+    nid, user, action, body, has_topic_link = FIXTURES[index]
+    return notification(nid, user, action, body, topic_link=has_topic_link)
 
 
 def current_notifications(polls):
     """polls counts how many times /notifications has been served."""
-    items = [notification(*FIXTURES[1]), notification(*FIXTURES[0])]
+    items = [fixture(1), fixture(0)]
     if polls >= 2:
-        items.insert(0, notification(*FIXTURES[2]))
+        items.insert(0, fixture(2))
     if polls >= 3:
-        items.insert(0, notification(*FIXTURES[3]))
+        items.insert(0, fixture(3))
     return items
 
 
@@ -68,10 +93,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/v2/notifications":
             STATE["polls"] += 1
             items = current_notifications(STATE["polls"])
-            return self._json({"result": items, "message": "20/%d" % len(items)})
+            return self._json({"result": items, "message": "Notifications 1-%d/4" % len(items)})
         if path.startswith("/api/v2/topics/"):
             tid = int(path.rsplit("/", 1)[1])
-            return self._json({"result": {"id": tid, "title": "关于 xxx 的讨论", "url": "/t/%d" % tid}})
+            return self._json({"result": {"id": tid, "title": TOPIC_TITLE, "url": "/t/%d" % tid}})
         if path == "/__hooks":
             return self._json(STATE)
         return self._json({"message": "not found"}, 404)

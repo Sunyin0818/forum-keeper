@@ -9,6 +9,13 @@ import (
 	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
 )
 
+// Realistic `text` values: V2EX sends an HTML fragment here, not a plain phrase.
+const (
+	replyText   = `<a href="/member/alice" target="_blank"><strong>alice</strong></a> 在 <a href="/t/555#reply28" class="topic-link">关于 xxx 的讨论</a> 里回复了你`
+	mentionText = `<a href="/member/bob" target="_blank"><strong>bob</strong></a> 在 <a href="/t/555#reply9" class="topic-link">关于 xxx 的讨论</a> 里提到了你`
+	thanksText  = `<a href="/member/carol" target="_blank"><strong>carol</strong></a> 在 <a href="/t/555#reply3" class="topic-link">关于 xxx 的讨论</a> 感谢了你的主题`
+)
+
 func TestKindOf(t *testing.T) {
 	cases := map[string]string{
 		"回复了你的主题":        KindReply,
@@ -16,11 +23,70 @@ func TestKindOf(t *testing.T) {
 		"感谢了你的主题":        KindThanks,
 		"关注了你":           KindOther,
 		"something else": KindOther,
+		// The real payloads are HTML fragments.
+		replyText:   KindReply,
+		mentionText: KindMention,
+		thanksText:  KindThanks,
 	}
 	for text, want := range cases {
 		if got := KindOf(text); got != want {
 			t.Errorf("KindOf(%q) = %q, want %q", text, got, want)
 		}
+	}
+}
+
+func TestTopicTitleFromText(t *testing.T) {
+	for _, text := range []string{replyText, mentionText, thanksText} {
+		if got := TopicTitleFromText(text); got != "关于 xxx 的讨论" {
+			t.Errorf("TopicTitleFromText = %q, want %q", got, "关于 xxx 的讨论")
+		}
+	}
+	// No topic anchor (e.g. a thanks without one) must yield "", so the caller
+	// falls back to the API instead of rendering an empty line.
+	if got := TopicTitleFromText("<strong>x</strong> 感谢了你的主题"); got != "" {
+		t.Fatalf("expected empty title, got %q", got)
+	}
+}
+
+func TestActionLabelNeverLeaksHTML(t *testing.T) {
+	for _, text := range []string{replyText, mentionText, thanksText, "<b>weird</b> thing", ""} {
+		got := actionLabel(v2ex.Notification{Text: text})
+		if strings.ContainsAny(got, "<>") {
+			t.Errorf("actionLabel(%q) leaked markup: %q", text, got)
+		}
+	}
+}
+
+func TestBuildCardWithRealisticTextHasNoHTML(t *testing.T) {
+	items := []v2ex.Notification{{
+		ID:              1,
+		Text:            replyText,
+		Payload:         "/t/555#reply28",
+		PayloadRendered: `@<a href="/member/Sunyin">Sunyin</a> 我也遇到过同样的问题`,
+		Member:          v2ex.Member{Username: "alice"},
+	}}
+
+	// No titles map: the title must come out of the notification's own text.
+	card := BuildCard(items, nil)
+	if card.Header.Title.Content != "💬 V2EX · 回复了你" {
+		t.Fatalf("unexpected title %q", card.Header.Title.Content)
+	}
+
+	b, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	body := string(b)
+	for _, bad := range []string{"<a ", "</a>", "<strong>", "class=", "target="} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("card leaked %q:\n%s", bad, body)
+		}
+	}
+	if !strings.Contains(body, "关于 xxx 的讨论") {
+		t.Fatalf("topic title was not extracted from text:\n%s", body)
+	}
+	if !strings.Contains(body, "@alice") {
+		t.Fatalf("member missing:\n%s", body)
 	}
 }
 
@@ -41,6 +107,23 @@ func TestTopicIDAndSnippet(t *testing.T) {
 	}
 }
 
+func TestSnippetPrefersPlainPayload(t *testing.T) {
+	it := v2ex.Notification{
+		Payload:         "@Sunyin 按的时候屏幕是不是会闪一下？",
+		PayloadRendered: `@<a href="/member/Sunyin">Sunyin</a> 按的时候屏幕是不是会闪一下？`,
+	}
+	got := Snippet(it)
+	if got != "@Sunyin 按的时候屏幕是不是会闪一下？" {
+		t.Fatalf("Snippet = %q; want the plain payload without the stray space", got)
+	}
+
+	// A payload that is just a path must fall back to the rendered body.
+	it2 := v2ex.Notification{Payload: "/t/123#reply1", PayloadRendered: `@<a href="/member/x">x</a> 正文`}
+	if got := Snippet(it2); got != "@ x 正文" {
+		t.Fatalf("Snippet fallback = %q", got)
+	}
+}
+
 func TestTopicIDFromFullURL(t *testing.T) {
 	it := v2ex.Notification{Payload: "https://www.v2ex.com/t/999"}
 	if got := TopicID(it); got != 999 {
@@ -54,7 +137,7 @@ func TestTopicIDFromFullURL(t *testing.T) {
 func TestBuildCardSingle(t *testing.T) {
 	items := []v2ex.Notification{{
 		ID:              1,
-		Text:            "回复了你的主题",
+		Text:            replyText,
 		Payload:         "/t/555#reply1",
 		PayloadRendered: "内容内容",
 		Member:          v2ex.Member{Username: "somebody"},
@@ -64,7 +147,7 @@ func TestBuildCardSingle(t *testing.T) {
 	if card.Header == nil {
 		t.Fatal("missing header")
 	}
-	if card.Header.Title.Content != "💬 V2EX · 回复了你的主题" {
+	if card.Header.Title.Content != "💬 V2EX · 回复了你" {
 		t.Fatalf("unexpected title %q", card.Header.Title.Content)
 	}
 	if card.Header.Template != "blue" {
@@ -94,7 +177,7 @@ func TestBuildCardAggregatesAndTruncates(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		items = append(items, v2ex.Notification{
 			ID:     i + 1,
-			Text:   "回复了你的主题",
+			Text:   replyText,
 			Member: v2ex.Member{Username: "u"},
 		})
 	}
@@ -120,7 +203,7 @@ func TestBuildCardAggregatesAndTruncates(t *testing.T) {
 func TestCardMarshalsToValidJSON(t *testing.T) {
 	card := BuildCard([]v2ex.Notification{{
 		ID:     1,
-		Text:   "在回复中提到了你",
+		Text:   mentionText,
 		Member: v2ex.Member{Username: "bob"},
 	}}, nil)
 	b, err := json.Marshal(card)

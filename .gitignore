@@ -5,3 +5,4 @@ state.db
 data/
 *.test
 coverage.out
+__pycache__/
