@@ -1,0 +1,7 @@
+.env
+bin/
+/notifier
+state.db
+data/
+*.test
+coverage.out

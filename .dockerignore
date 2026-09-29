@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+.vscode
+.idea
+*.md
+data/
+state.db
+notifier
+bin/

@@ -1,0 +1,27 @@
+services:
+  notifier:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: v2ex-notifier:latest
+    container_name: v2ex-notifier
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Always keep state on the mounted volume.
+      STATE_PATH: /data/state.db
+      # Container-friendly default; override in .env when your setup differs
+      # (e.g. podman users may prefer http://host.containers.internal:7897).
+      V2EX_PROXY: ${V2EX_PROXY:-http://host.docker.internal:7897}
+    volumes:
+      - notifier-data:/data
+    extra_hosts:
+      # Lets the container reach a proxy running on the host.
+      # Podman users can use host.containers.internal instead.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  notifier-data:
