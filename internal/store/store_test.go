@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestFilterNewMarkAndCount(t *testing.T) {
@@ -148,5 +149,52 @@ func TestStateSurvivesReopen(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != 43 {
 		t.Fatalf("expected [43] after reopen, got %v", got)
+	}
+}
+
+func TestStartupTimestampRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if got, err := s.LastStartup(); err != nil || !got.IsZero() {
+		t.Fatalf("LastStartup = %v, %v; want zero", got, err)
+	}
+
+	want := time.Unix(1759000000, 0)
+	if err := s.SetStartup(want); err != nil {
+		t.Fatalf("SetStartup: %v", err)
+	}
+
+	// The startup marker must not be counted as a seen notification, otherwise
+	// it would break first-run detection.
+	if n, err := s.Count(); err != nil || n != 0 {
+		t.Fatalf("Count = %d, %v; want 0", n, err)
+	}
+
+	got, err := s.LastStartup()
+	if err != nil {
+		t.Fatalf("LastStartup: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("LastStartup = %v, want %v", got, want)
+	}
+}
+
+func TestSetStartupOnEmptyReadOnlyStoreIsNoop(t *testing.T) {
+	s, err := OpenRead(filepath.Join(t.TempDir(), "absent", "state.db"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.SetStartup(time.Now()); err != nil {
+		t.Fatalf("SetStartup on read-only store: %v", err)
+	}
+	if got, err := s.LastStartup(); err != nil || !got.IsZero() {
+		t.Fatalf("LastStartup = %v, %v; want zero", got, err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,11 +23,13 @@ func nopLogger() *slog.Logger {
 
 func baseConfig() *config.Config {
 	return &config.Config{
-		V2EXBaseURL:  "https://example.invalid/api/v2",
-		FirstRun:     config.FirstRunSkip,
-		MaxPages:     3,
-		PollInterval: time.Minute,
-		AlertOnError: true,
+		V2EXBaseURL:            "https://example.invalid/api/v2",
+		FirstRun:               config.FirstRunSkip,
+		MaxPages:               3,
+		PollInterval:           time.Minute,
+		AlertOnError:           true,
+		StartupMessage:         true,
+		StartupMessageCooldown: 10 * time.Minute,
 	}
 }
 
@@ -65,9 +68,17 @@ func (f *fakeFetcher) Member(context.Context) (*v2ex.Member, error) {
 type fakeState struct {
 	seen    map[int]bool
 	markErr error
+	startup time.Time
 }
 
 func newFakeState() *fakeState { return &fakeState{seen: map[int]bool{}} }
+
+func (s *fakeState) LastStartup() (time.Time, error) { return s.startup, nil }
+
+func (s *fakeState) SetStartup(at time.Time) error {
+	s.startup = at
+	return nil
+}
 
 func (s *fakeState) FilterNew(ids []int) ([]int, error) {
 	var out []int
@@ -92,9 +103,10 @@ func (s *fakeState) Mark(ids []int) error {
 func (s *fakeState) Count() (int, error) { return len(s.seen), nil }
 
 type fakeNotifier struct {
-	batches [][]int
-	alerts  []string
-	err     error
+	batches  [][]int
+	alerts   []string
+	startups [][]string
+	err      error
 }
 
 func (n *fakeNotifier) Notify(_ context.Context, items []v2ex.Notification) error {
@@ -111,6 +123,14 @@ func (n *fakeNotifier) Notify(_ context.Context, items []v2ex.Notification) erro
 
 func (n *fakeNotifier) Alert(_ context.Context, text string) error {
 	n.alerts = append(n.alerts, text)
+	return nil
+}
+
+func (n *fakeNotifier) Startup(_ context.Context, lines []string) error {
+	if n.err != nil {
+		return n.err
+	}
+	n.startups = append(n.startups, lines)
 	return nil
 }
 
@@ -376,5 +396,109 @@ func TestAlertsAfterRepeatedFailures(t *testing.T) {
 	a.pollAndLog(ctx)
 	if len(n.alerts) != 1 {
 		t.Fatalf("expected alert throttling, got %d alerts", len(n.alerts))
+	}
+}
+
+// --- startup message -------------------------------------------------------
+
+func TestNotifyStartupSendsCard(t *testing.T) {
+	st := newFakeState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+	a.SetVersion("1.2.3")
+
+	if err := a.NotifyStartup(context.Background(), false); err != nil {
+		t.Fatalf("NotifyStartup: %v", err)
+	}
+	if len(n.startups) != 1 {
+		t.Fatalf("expected 1 startup message, got %d", len(n.startups))
+	}
+	lines := strings.Join(n.startups[0], "\n")
+	for _, want := range []string{"1.2.3", "轮询间隔", "首轮策略", "状态文件"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("startup message missing %q:\n%s", want, lines)
+		}
+	}
+	if st.startup.IsZero() {
+		t.Fatal("startup time was not recorded")
+	}
+}
+
+func TestNotifyStartupRespectsCooldown(t *testing.T) {
+	st := newFakeState()
+	st.startup = time.Now().Add(-time.Minute) // a restart loop, not a real start
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+
+	if err := a.NotifyStartup(context.Background(), false); err != nil {
+		t.Fatalf("NotifyStartup: %v", err)
+	}
+	if len(n.startups) != 0 {
+		t.Fatalf("cooldown must suppress the message, got %d", len(n.startups))
+	}
+}
+
+func TestNotifyStartupForceBypassesCooldownAndToggle(t *testing.T) {
+	cfg := baseConfig()
+	cfg.StartupMessage = false
+
+	st := newFakeState()
+	st.startup = time.Now()
+	n := &fakeNotifier{}
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
+
+	if err := a.NotifyStartup(context.Background(), true); err != nil {
+		t.Fatalf("NotifyStartup(force): %v", err)
+	}
+	if len(n.startups) != 1 {
+		t.Fatalf("force must send regardless, got %d", len(n.startups))
+	}
+}
+
+func TestNotifyStartupDisabled(t *testing.T) {
+	cfg := baseConfig()
+	cfg.StartupMessage = false
+
+	n := &fakeNotifier{}
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, newFakeState(), n)
+
+	if err := a.NotifyStartup(context.Background(), false); err != nil {
+		t.Fatalf("NotifyStartup: %v", err)
+	}
+	if len(n.startups) != 0 {
+		t.Fatalf("STARTUP_MESSAGE=false must not send, got %d", len(n.startups))
+	}
+}
+
+func TestNotifyStartupDryRunSendsNothing(t *testing.T) {
+	st := newFakeState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), true, &fakeFetcher{}, st, n)
+
+	if err := a.NotifyStartup(context.Background(), false); err != nil {
+		t.Fatalf("NotifyStartup: %v", err)
+	}
+	if len(n.startups) != 0 {
+		t.Fatalf("dry-run must not send, got %d", len(n.startups))
+	}
+	if !st.startup.IsZero() {
+		t.Fatal("dry-run must not record a startup time")
+	}
+}
+
+func TestStartupLinesDoNotLeakProxyCredentials(t *testing.T) {
+	cfg := baseConfig()
+	cfg.V2EXProxy = "http://alice:s3cret@proxy.internal:7897"
+
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, newFakeState(), &fakeNotifier{})
+	lines := strings.Join(a.startupLines(), "\n")
+
+	for _, secret := range []string{"alice", "s3cret", "proxy.internal"} {
+		if strings.Contains(lines, secret) {
+			t.Fatalf("startup message leaked %q:\n%s", secret, lines)
+		}
+	}
+	if !strings.Contains(lines, "V2EX 代理: 已设置") {
+		t.Fatalf("proxy should be reported as configured:\n%s", lines)
 	}
 }

@@ -13,7 +13,7 @@
 ### 1. 获取 V2EX Personal Access Token
 
 打开 <https://www.v2ex.com/settings/tokens> 创建令牌，复制形如
-`bd1f2c67-cc7f-48e3-a48a-e5b88b427146` 的值。
+`00000000-1111-2222-3333-444444444444` 的占位值，替换掉 `.env` 里的 `V2EX_TOKEN`。
 
 > 令牌有有效期（30/60/90/180/360 天）。建议单独建一个只用于本服务的令牌，到期轮换时只改 `V2EX_TOKEN`。
 
@@ -73,6 +73,8 @@ docker compose logs -f      # 或 podman compose logs -f
 | `MARK_READ` | `false` | 推送成功后调用 `DELETE /notifications/:id` |
 | `FILTER_TYPES` | 空 | 只推指定类型：`reply,mention,thanks,other` |
 | `ALERT_ON_ERROR` | `true` | 连续失败达到阈值时发飞书告警 |
+| `STARTUP_MESSAGE` | `true` | 启动时发送「服务已启动」卡片 |
+| `STARTUP_MESSAGE_COOLDOWN` | `10m` | 两条启动消息的最小间隔；重启循环不会刷屏，设 `0` 则每次都发 |
 | `MAX_PAGES` | `3` | 每轮最多翻几页（每页 20 条） |
 | `HTTP_TIMEOUT` | `20s` | 单次请求超时 |
 | `STATE_PATH` | `state.db` | 状态文件路径；容器内由 compose 覆盖为 `/data/state.db` |
@@ -105,6 +107,42 @@ podman run --rm --network=host \
 ```
 level=INFO msg="dry-run: would push" id=1234 member=alice text="回复了你的主题" topic=555 snippet="@alice 我也遇到过同样的问题"
 ```
+
+## 启动消息
+
+服务启动时会先发一张绿色卡片，方便确认部署成功和参数是否符合预期：
+
+```
+┌────────────────────────────────────┐
+│ 🟢 V2EX 通知服务已启动              │
+├────────────────────────────────────┤
+│ 版本: 1338e0f                      │
+│ 账号: @yourname (id 12345)         │
+│ 轮询间隔: 1m0s                     │
+│ 首轮策略: skip                     │
+│ 标记已读: 否                       │
+│ 类型过滤: 全部                     │
+│ V2EX 代理: 已设置                  │
+│ 状态文件: /data/state.db           │
+├────────────────────────────────────┤
+│ 启动时间 2026-09-29 15:30:00       │
+└────────────────────────────────────┘
+```
+
+> 代理项只显示「已设置 / 未设置」。代理 URL 可能内嵌账号密码，因此**不会**
+> 写进消息里。
+
+只发一次测试消息（不启动轮询、不发送、不轮询）：
+
+```bash
+set -a; . ./.env; set +a
+./bin/notifier --notify-startup
+```
+
+这个命令会忽略 `STARTUP_MESSAGE=false` 和冷却时间，适合用来验证 webhook 是否可用。
+
+**防刷屏**：容器常常配 `restart: unless-stopped`，如果启动后很快崩掉重启，
+默认 `10m` 的冷却时间会抑制重复消息（日志会记录 `startup message skipped (cooldown)`）。
 
 ## 卡片长这样
 

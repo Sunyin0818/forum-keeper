@@ -5,6 +5,7 @@ import (
 	"html"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
 )
@@ -168,6 +169,28 @@ func BuildCard(items []v2ex.Notification, titles map[int]string) Card {
 	card.Elements = append(card.Elements, &NoteElement{
 		Tag:      "note",
 		Elements: []TextNode{{Tag: "plain_text", Content: note}},
+	})
+	return card
+}
+
+// BuildStartupCard renders the "service started" card shown once when the
+// service comes up.
+func BuildStartupCard(lines []string, at time.Time) Card {
+	card := Card{
+		Config: CardConfig{WideScreenMode: true},
+		Header: &CardHeader{
+			Template: "green",
+			Title:    plain("🟢 V2EX 通知服务已启动"),
+		},
+	}
+	card.Elements = append(card.Elements, &DivElement{
+		Tag: "div",
+		// plain_text avoids having to escape paths and other values for lark_md.
+		Text: &TextNode{Tag: "plain_text", Content: strings.Join(lines, "\n")},
+	})
+	card.Elements = append(card.Elements, &NoteElement{
+		Tag:      "note",
+		Elements: []TextNode{{Tag: "plain_text", Content: "启动时间 " + at.Local().Format("2006-01-02 15:04:05")}},
 	})
 	return card
 }

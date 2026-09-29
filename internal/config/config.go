@@ -40,6 +40,10 @@ type Config struct {
 	FilterTypes  []string
 	AlertOnError bool
 	LogLevel     string
+
+	// Startup notification
+	StartupMessage         bool
+	StartupMessageCooldown time.Duration
 }
 
 // Load reads configuration from the environment and validates it.
@@ -72,6 +76,12 @@ func Load() (*Config, error) {
 	if cfg.AlertOnError, err = envBool("ALERT_ON_ERROR", true); err != nil {
 		return nil, err
 	}
+	if cfg.StartupMessage, err = envBool("STARTUP_MESSAGE", true); err != nil {
+		return nil, err
+	}
+	if cfg.StartupMessageCooldown, err = envDuration("STARTUP_MESSAGE_COOLDOWN", 10*time.Minute); err != nil {
+		return nil, err
+	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -101,6 +111,9 @@ func (c *Config) validate() error {
 	}
 	if c.MaxPages < 1 {
 		return fmt.Errorf("config: MAX_PAGES must be >= 1, got %d", c.MaxPages)
+	}
+	if c.StartupMessageCooldown < 0 {
+		return fmt.Errorf("config: STARTUP_MESSAGE_COOLDOWN must not be negative, got %s", c.StartupMessageCooldown)
 	}
 	if c.StatePath == "" {
 		return fmt.Errorf("config: STATE_PATH must not be empty")

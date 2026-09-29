@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
 )
@@ -39,6 +40,11 @@ func (b *Bot) Notify(ctx context.Context, items []v2ex.Notification) error {
 // Alert sends an operational warning (token expired, proxy down, ...).
 func (b *Bot) Alert(ctx context.Context, text string) error {
 	return b.client.SendText(ctx, text)
+}
+
+// Startup announces that the service came up.
+func (b *Bot) Startup(ctx context.Context, lines []string) error {
+	return b.client.SendCard(ctx, BuildStartupCard(lines, time.Now()))
 }
 
 // resolveTitles lazily looks up topic titles, tolerating failures: a missing

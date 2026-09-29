@@ -38,6 +38,9 @@ export LOG_LEVEL=warn
 export NO_PROXY="127.0.0.1,localhost"
 export no_proxy="127.0.0.1,localhost"
 
+echo "==> run 0: startup message (webhook smoke test)"
+"$WORK/notifier" --notify-startup
+
 echo "==> run 1: first run records existing notifications without pushing"
 "$WORK/notifier" --once
 
@@ -55,19 +58,28 @@ import urllib.request
 state = json.load(urllib.request.urlopen(sys.argv[1] + "/__hooks"))
 hooks, deleted = state["hooks"], state["deleted"]
 
-if len(hooks) != 2:
-    raise SystemExit("expected 2 cards, got %d: %s" % (len(hooks), hooks))
+if len(hooks) != 3:
+    raise SystemExit("expected 3 cards, got %d: %s" % (len(hooks), hooks))
 
 def blob(card):
     return json.dumps(card, ensure_ascii=False)
 
-first, second = blob(hooks[0]), blob(hooks[1])
+startup, first, second = blob(hooks[0]), blob(hooks[1]), blob(hooks[2])
+
+# run 0: startup card
+assert hooks[0]["msg_type"] == "interactive", startup
+assert "服务已启动" in startup, startup
+assert hooks[0]["card"]["header"]["template"] == "green", startup
+
+# run 2: the newly arrived notification
 assert "carol" in first, first
 assert "感谢" in first, first
 assert "关于 xxx 的讨论" in first, first
 assert "https://www.v2ex.com/t/555" in first, first
+
+# run 3: MARK_READ deletes it
 assert "dave" in second, second
 assert deleted == [4], "expected [4] deleted, got %s" % deleted
 
-print("smoke OK: 2 cards pushed, topic title resolved, 1 notification marked read")
+print("smoke OK: startup card + 2 notification cards, topic title resolved, 1 marked read")
 PY

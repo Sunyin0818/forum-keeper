@@ -8,12 +8,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
 
-var seenBucket = []byte("seen")
+var (
+	seenBucket = []byte("seen")
+	metaBucket = []byte("meta")
+)
+
+const startupKey = "startup_at"
 
 // Store is a bbolt-backed set of seen notification IDs.
 type Store struct {
@@ -33,7 +39,10 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, e := tx.CreateBucketIfNotExists(seenBucket)
+		if _, e := tx.CreateBucketIfNotExists(seenBucket); e != nil {
+			return e
+		}
+		_, e := tx.CreateBucketIfNotExists(metaBucket)
 		return e
 	}); err != nil {
 		_ = db.Close()
@@ -149,4 +158,51 @@ func key(id int) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, uint64(id))
 	return b
+}
+
+// LastStartup returns when the startup message was last sent, or the zero time
+// if it never was.
+func (s *Store) LastStartup() (time.Time, error) {
+	if s.db == nil {
+		return time.Time{}, nil
+	}
+	var t time.Time
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(metaBucket)
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte(startupKey))
+		if v == nil {
+			return nil
+		}
+		sec, err := strconv.ParseInt(string(v), 10, 64)
+		if err != nil {
+			return nil // tolerate a corrupt value rather than failing startup
+		}
+		t = time.Unix(sec, 0)
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("store: last startup: %w", err)
+	}
+	return t, nil
+}
+
+// SetStartup records when the startup message was sent. It is a no-op on a
+// read-only (empty) store.
+func (s *Store) SetStartup(at time.Time) error {
+	if s.db == nil {
+		return nil
+	}
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(metaBucket)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(startupKey), []byte(strconv.FormatInt(at.Unix(), 10)))
+	}); err != nil {
+		return fmt.Errorf("store: set startup: %w", err)
+	}
+	return nil
 }

@@ -23,9 +23,10 @@ var version = "dev"
 
 func main() {
 	var (
-		once        = flag.Bool("once", false, "run a single poll and exit")
-		dryRun      = flag.Bool("dry-run", false, "log what would be pushed without sending or mutating state")
-		showVersion = flag.Bool("version", false, "print version and exit")
+		once          = flag.Bool("once", false, "run a single poll and exit")
+		dryRun        = flag.Bool("dry-run", false, "log what would be pushed without sending or mutating state")
+		notifyStartup = flag.Bool("notify-startup", false, "send the startup message and exit (webhook smoke test)")
+		showVersion   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
 
@@ -56,6 +57,7 @@ func main() {
 			logger.Warn("closing state store", "err", err)
 		}
 	}()
+	service.SetVersion(version)
 
 	// Fail fast on an invalid token; tolerate transient API outages.
 	if err := service.CheckToken(ctx); err != nil {
@@ -64,6 +66,14 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Warn("could not verify token at startup, continuing", "err", err)
+	}
+
+	if *notifyStartup {
+		if err := service.NotifyStartup(ctx, true); err != nil {
+			logger.Error("startup message failed", "err", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if *once {

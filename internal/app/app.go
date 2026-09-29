@@ -35,12 +35,15 @@ type State interface {
 	FilterNew(ids []int) ([]int, error)
 	Mark(ids []int) error
 	Count() (int, error)
+	LastStartup() (time.Time, error)
+	SetStartup(at time.Time) error
 }
 
 // Notifier delivers messages to the outside world.
 type Notifier interface {
 	Notify(ctx context.Context, items []v2ex.Notification) error
 	Alert(ctx context.Context, text string) error
+	Startup(ctx context.Context, lines []string) error
 }
 
 // rateLimiter is implemented by the real client; used only for logging.
@@ -60,6 +63,9 @@ type App struct {
 
 	failures  int
 	lastAlert time.Time
+
+	version string
+	member  *v2ex.Member
 }
 
 // New builds an App from configuration, opening the state database and HTTP
@@ -106,19 +112,82 @@ func (a *App) Close() error {
 	return a.closer()
 }
 
+// SetVersion records the build version so the startup message can report it.
+func (a *App) SetVersion(v string) {
+	a.version = v
+}
+
 // CheckToken validates the personal access token and logs the identity.
 func (a *App) CheckToken(ctx context.Context) error {
 	m, err := a.src.Member(ctx)
 	if err != nil {
 		return err
 	}
+	a.member = m
 	a.log.Info("authenticated with V2EX", "username", m.Username, "member_id", m.ID)
 	return nil
+}
+
+// NotifyStartup sends the "service started" card.
+//
+// With force=false it honours STARTUP_MESSAGE and skips the message when one
+// was sent within STARTUP_MESSAGE_COOLDOWN (so a restart loop cannot spam the
+// group). force=true is used by the --notify-startup flag and bypasses both.
+func (a *App) NotifyStartup(ctx context.Context, force bool) error {
+	if !force {
+		if !a.cfg.StartupMessage {
+			return nil
+		}
+		if last, err := a.state.LastStartup(); err != nil {
+			a.log.Warn("could not read last startup time", "err", err)
+		} else if !last.IsZero() && a.cfg.StartupMessageCooldown > 0 {
+			if since := time.Since(last); since < a.cfg.StartupMessageCooldown {
+				a.log.Info("startup message skipped (cooldown)",
+					"last_sent", last.Format(time.RFC3339), "ago", since.Round(time.Second))
+				return nil
+			}
+		}
+	}
+
+	lines := a.startupLines()
+	if a.dryRun {
+		a.log.Info("dry-run: would send startup message", "lines", lines)
+		return nil
+	}
+	if err := a.bot.Startup(ctx, lines); err != nil {
+		return fmt.Errorf("send startup message: %w", err)
+	}
+	a.log.Info("startup message sent")
+	if err := a.state.SetStartup(time.Now()); err != nil {
+		a.log.Warn("could not record startup time", "err", err)
+	}
+	return nil
+}
+
+func (a *App) startupLines() []string {
+	version := a.version
+	if version == "" {
+		version = "dev"
+	}
+	lines := []string{"版本: " + version}
+	if a.member != nil {
+		lines = append(lines, fmt.Sprintf("账号: @%s (id %d)", a.member.Username, a.member.ID))
+	}
+	lines = append(lines,
+		"轮询间隔: "+a.cfg.PollInterval.String(),
+		"首轮策略: "+a.cfg.FirstRun,
+		"标记已读: "+yesNo(a.cfg.MarkRead),
+		"类型过滤: "+filterLabel(a.cfg.FilterTypes),
+		"V2EX 代理: "+proxyLabel(a.cfg.V2EXProxy),
+		"状态文件: "+a.cfg.StatePath,
+	)
+	return lines
 }
 
 // Run polls until the context is cancelled.
 func (a *App) Run(ctx context.Context) error {
 	a.log.Info("v2ex-notifier starting",
+		"version", a.version,
 		"interval", a.cfg.PollInterval.String(),
 		"dry_run", a.dryRun,
 		"first_run", a.cfg.FirstRun,
@@ -126,6 +195,10 @@ func (a *App) Run(ctx context.Context) error {
 		"state", a.cfg.StatePath,
 		"filter_types", a.cfg.FilterTypes,
 	)
+	if err := a.NotifyStartup(ctx, false); err != nil {
+		// A failed startup message must not stop the service.
+		a.log.Warn("startup message failed", "err", err)
+	}
 	a.pollAndLog(ctx)
 
 	ticker := time.NewTicker(a.cfg.PollInterval)
@@ -349,4 +422,27 @@ func truncateErr(err error, max int) string {
 		return s
 	}
 	return strings.TrimSpace(string(runes[:max])) + "…"
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "是"
+	}
+	return "否"
+}
+
+func filterLabel(types []string) string {
+	if len(types) == 0 {
+		return "全部"
+	}
+	return strings.Join(types, ", ")
+}
+
+// proxyLabel deliberately reports only whether a proxy is configured: the URL
+// may embed credentials and would otherwise end up in the Feishu message.
+func proxyLabel(proxy string) string {
+	if strings.TrimSpace(proxy) == "" {
+		return "未设置（走系统代理或直连）"
+	}
+	return "已设置"
 }

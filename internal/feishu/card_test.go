@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
 )
@@ -131,6 +132,40 @@ func TestCardMarshalsToValidJSON(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if decoded["header"].(map[string]any)["template"] != "orange" {
+		t.Fatalf("unexpected card JSON: %s", b)
+	}
+}
+
+func TestBuildStartupCard(t *testing.T) {
+	at := time.Date(2026, 9, 29, 15, 30, 0, 0, time.Local)
+	card := BuildStartupCard([]string{"版本: 1.2.3", "账号: @tester (id 1)"}, at)
+
+	if card.Header == nil || card.Header.Template != "green" {
+		t.Fatalf("unexpected header: %+v", card.Header)
+	}
+	if card.Header.Title.Content != "🟢 V2EX 通知服务已启动" {
+		t.Fatalf("unexpected title %q", card.Header.Title.Content)
+	}
+	if len(card.Elements) != 2 {
+		t.Fatalf("expected body + note, got %d elements", len(card.Elements))
+	}
+	div, ok := card.Elements[0].(*DivElement)
+	if !ok {
+		t.Fatalf("first element is %T", card.Elements[0])
+	}
+	// plain_text keeps paths and usernames safe from lark_md parsing.
+	if div.Text.Tag != "plain_text" {
+		t.Fatalf("startup body should be plain_text, got %q", div.Text.Tag)
+	}
+	if !strings.Contains(div.Text.Content, "版本: 1.2.3") || !strings.Contains(div.Text.Content, "@tester") {
+		t.Fatalf("unexpected body %q", div.Text.Content)
+	}
+
+	b, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), "启动时间 2026-09-29 15:30:00") {
 		t.Fatalf("unexpected card JSON: %s", b)
 	}
 }
