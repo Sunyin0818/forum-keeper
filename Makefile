@@ -22,14 +22,16 @@ clean:
 	rm -rf bin
 
 # Loads .env, then runs a single poll without sending anything.
+# The local-env.sh helpers adapts .env (written for the container) so a host
+# run can resolve the proxy address. See the script for details.
 dry-run:
-	set -a; [ -f .env ] && . ./.env; set +a; $(GO) run ./cmd/notifier --once --dry-run
+	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier --once --dry-run
 
 run-once:
-	set -a; [ -f .env ] && . ./.env; set +a; $(GO) run ./cmd/notifier --once
+	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier --once
 
 run:
-	set -a; [ -f .env ] && . ./.env; set +a; $(GO) run ./cmd/notifier
+	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier
 
 # --- containers (docker and podman both work) -------------------------------
 

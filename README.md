@@ -214,11 +214,16 @@ set -a; . ./.env; set +a
 | 本地笔记本（走 Clash） | `HTTPS_PROXY=http://host.docker.internal:7897` |
 | 云端服务器（直连 v2ex.com） | 不写这一行 |
 
+> `.env` 里的地址是按**容器**写的。在宿主机上直接跑二进制时（`./scripts/dry-run.sh`、
+> `make run`），`scripts/local-env.sh` 会自动把 `host.docker.internal` /
+> `host.containers.internal` 改写成 `127.0.0.1` —— 否则宿主机解析不了这个域名，
+> 本地验证会报 `lookup host.docker.internal: no such host` 而直接失败。
+
 ### 两个坑
 
 **1. 容器里不能用 `127.0.0.1`。** 容器内的 `127.0.0.1` 是容器自己，不是宿主机。
 必须用 `host.docker.internal`（Docker）/ `host.containers.internal`（Podman），
-或者用 `--network=host` 配 `127.0.0.1`。
+或者用 `--network=host` 配 `127.0.0.1`。上面说了，宿主机上直接跑时这条会自动改写。
 
 **2. podman 会把宿主机的 `*_proxy` 变量复制进容器。** 宿主机上的
 `https_proxy=http://127.0.0.1:7897` 会被原样带进去，而那个地址在容器里指向容器自己 ——

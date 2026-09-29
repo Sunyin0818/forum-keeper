@@ -5,15 +5,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if [ ! -f .env ]; then
-  echo "缺少 .env：先执行 cp .env.example .env 并填写 V2EX_TOKEN / FEISHU_WEBHOOK" >&2
-  exit 1
-fi
-
-set -a
-# shellcheck disable=SC1091
-. ./.env
-set +a
+# Sources .env and rewrites container-only host names (host.docker.internal)
+# for host execution.
+# shellcheck source=scripts/local-env.sh
+. ./scripts/local-env.sh
 
 if command -v go >/dev/null 2>&1; then
   exec go run ./cmd/notifier --once --dry-run
