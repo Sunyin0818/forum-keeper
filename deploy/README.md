@@ -36,6 +36,24 @@ INFO first run: recording existing notifications without pushing  count=N
 群里会先收到一张 🟢 启动卡片。**不会刷屏** —— `FIRST_RUN=skip` 会把当前未读提醒
 全部标记为已见但不推送，之后只推真正的新提醒。
 
+## 2b. 每日签到（可选）
+
+在 `.env` 里填上站点 Cookie 即可，不用额外容器或定时任务：
+
+```ini
+V2EX_COOKIE=A2=...; A2O=...      # V2EX 网页会话 Cookie（不是 API Token）
+LIBRA_COOKIE=access_token=...    # 2libra
+CHECKIN_TIME=06:00
+CHECKIN_TZ=Asia/Shanghai
+```
+
+默认每天 06:00（`CHECKIN_TZ` 时区）给两个站点各签一次，结果合并成一张飞书卡片。
+`CHECKIN_ON_START=true` 可重启时补签一次（同一天不会重复）。手工触发：
+
+```bash
+docker compose exec notifier notifier --checkin
+```
+
 ## 3. 升级
 
 ```bash
@@ -54,6 +72,8 @@ docker compose pull && docker compose up -d
 | `V2EX rejected the token` | 令牌失效，去 <https://www.v2ex.com/settings/tokens> 换新，更新 `.env` 后 `docker compose up -d`。 |
 | 长时间无日志 | 正常。无新提醒时 info 级别不打日志；推送成功才有 `pushed notifications`。想确认在轮询，把 `LOG_LEVEL=debug`。 |
 | 飞书返回 `code=19021` | 机器人开了签名校验但没填 `FEISHU_SECRET`。 |
+| 签到卡片 `Cookie 已失效` / `HTTP 401` | Cookie 过期。重新登录站点，更新 `V2EX_COOKIE` / `LIBRA_COOKIE`，再 `docker compose up -d`。 |
+| 签到卡片 `未找到签到 token` | V2EX 未登录（Cookie 不完整，2FA 账号缺 `A2O`），或页面结构变了。 |
 
 ## registry 选择
 

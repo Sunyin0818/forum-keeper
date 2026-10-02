@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Sunyin0818/v2ex-notifier/internal/checkin"
 	"github.com/Sunyin0818/v2ex-notifier/internal/config"
 	"github.com/Sunyin0818/v2ex-notifier/internal/feishu"
 	"github.com/Sunyin0818/v2ex-notifier/internal/store"
@@ -38,6 +39,8 @@ type State interface {
 	Count() (int, error)
 	LastStartup() (time.Time, error)
 	SetStartup(at time.Time) error
+	LastCheckin() (time.Time, error)
+	SetCheckin(at time.Time) error
 }
 
 // Notifier delivers messages to the outside world.
@@ -45,6 +48,7 @@ type Notifier interface {
 	Notify(ctx context.Context, items []v2ex.Notification) error
 	Alert(ctx context.Context, text string) error
 	Startup(ctx context.Context, lines []string) error
+	Checkin(ctx context.Context, entries []feishu.CheckinEntry) error
 }
 
 // rateLimiter is implemented by the real client; used only for logging.
@@ -67,6 +71,7 @@ type App struct {
 
 	version string
 	member  *v2ex.Member
+	sites   []checkin.Site
 }
 
 // New builds an App from configuration, opening the state database and HTTP
@@ -102,7 +107,30 @@ func NewWithDeps(cfg *config.Config, logger *slog.Logger, dryRun bool, src Fetch
 	if closer, ok := st.(interface{ Close() error }); ok {
 		a.closer = closer.Close
 	}
+	a.sites = buildCheckinSites(cfg)
 	return a
+}
+
+// buildCheckinSites turns credentials in the configuration into sites. A site
+// is only enabled when its credential is present, so an existing deployment
+// that never configured check-in keeps working unchanged.
+func buildCheckinSites(cfg *config.Config) []checkin.Site {
+	if !cfg.CheckinEnabled {
+		return nil
+	}
+	var sites []checkin.Site
+	if cfg.V2EXCookie != "" {
+		sites = append(sites, checkin.NewV2EXSite(cfg.V2EXCookie, cfg.V2EXWebBaseURL, cfg.HTTPTimeout))
+	}
+	if cfg.LibraCookie != "" || cfg.LibraToken != "" {
+		sites = append(sites, checkin.NewLibraSite(cfg.LibraCookie, cfg.LibraToken, cfg.LibraBaseURL, cfg.HTTPTimeout))
+	}
+	return sites
+}
+
+// SetCheckinSites overrides the configured sites (used by tests).
+func (a *App) SetCheckinSites(sites []checkin.Site) {
+	a.sites = sites
 }
 
 // Close releases resources held by the app.
@@ -179,10 +207,37 @@ func (a *App) startupLines() []string {
 		"首轮策略: "+a.cfg.FirstRun,
 		"标记已读: "+yesNo(a.cfg.MarkRead),
 		"类型过滤: "+filterLabel(a.cfg.FilterTypes),
+		"每日签到: "+a.checkinLabel(),
 		"V2EX 代理: "+proxyLabel(),
 		"状态文件: "+a.cfg.StatePath,
 	)
 	return lines
+}
+
+// checkinLabel summarises the check-in schedule for the startup card.
+func (a *App) checkinLabel() string {
+	if len(a.sites) == 0 {
+		return "未启用"
+	}
+	names := make([]string, 0, len(a.sites))
+	for _, s := range a.sites {
+		names = append(names, s.Name())
+	}
+	loc := a.cfg.CheckinLocation
+	if loc == nil {
+		loc = time.Local
+	}
+	return fmt.Sprintf("%s（每天 %02d:%02d %s）",
+		strings.Join(names, " + "), a.cfg.CheckinHour, a.cfg.CheckinMinute, loc)
+}
+
+// checkinLoc returns the configured schedule zone, falling back to the process
+// zone when it is unset (tests build a Config directly).
+func (a *App) checkinLoc() *time.Location {
+	if a.cfg.CheckinLocation != nil {
+		return a.cfg.CheckinLocation
+	}
+	return time.Local
 }
 
 // Run polls until the context is cancelled.
@@ -200,6 +255,10 @@ func (a *App) Run(ctx context.Context) error {
 		// A failed startup message must not stop the service.
 		a.log.Warn("startup message failed", "err", err)
 	}
+	if len(a.sites) > 0 {
+		a.maybeCheckinOnStart(ctx)
+		go a.checkinLoop(ctx)
+	}
 	a.pollAndLog(ctx)
 
 	ticker := time.NewTicker(a.cfg.PollInterval)
@@ -211,6 +270,92 @@ func (a *App) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			a.pollAndLog(ctx)
+		}
+	}
+}
+
+// RunCheckins signs in to every configured site once and reports the outcome as
+// a single Feishu card. It is safe to call repeatedly: every site treats
+// "already signed in today" as a success.
+func (a *App) RunCheckins(ctx context.Context) error {
+	if len(a.sites) == 0 {
+		a.log.Info("check-in skipped: no site configured")
+		return nil
+	}
+
+	results := checkin.Run(ctx, a.log, a.sites)
+	ok := 0
+	for _, r := range results {
+		if r.OK() {
+			ok++
+		}
+	}
+	a.log.Info("check-in finished", "ok", ok, "total", len(results))
+
+	if a.dryRun {
+		for _, r := range results {
+			a.log.Info("dry-run: check-in result", "site", r.Site, "status", string(r.Status), "detail", r.Detail)
+		}
+		return nil
+	}
+
+	entries := make([]feishu.CheckinEntry, 0, len(results))
+	for _, r := range results {
+		entries = append(entries, feishu.CheckinEntry{Site: r.Site, OK: r.OK(), Detail: r.Detail})
+	}
+	if err := a.bot.Checkin(ctx, entries); err != nil {
+		return fmt.Errorf("send check-in card: %w", err)
+	}
+	if err := a.state.SetCheckin(time.Now()); err != nil {
+		a.log.Warn("could not record check-in time", "err", err)
+	}
+	return nil
+}
+
+// maybeCheckinOnStart runs the check-in at startup when CHECKIN_ON_START is
+// enabled, unless it already ran today. The guard matters because containers
+// restart often and a restart loop must not spam the group.
+func (a *App) maybeCheckinOnStart(ctx context.Context) {
+	if !a.cfg.CheckinOnStart {
+		return
+	}
+	now := time.Now()
+	if last, err := a.state.LastCheckin(); err != nil {
+		a.log.Warn("could not read last check-in time", "err", err)
+	} else if !last.IsZero() && checkin.SameLocalDay(last, now, a.cfg.CheckinLocation) {
+		a.log.Info("check-in on start skipped: already ran today",
+			"last", last.In(a.checkinLoc()).Format(time.RFC3339))
+		return
+	}
+	a.log.Info("running check-in on start")
+	if err := a.RunCheckins(ctx); err != nil {
+		a.log.Warn("check-in on start failed", "err", err)
+	}
+}
+
+// checkinLoop sleeps until the configured wall-clock time and then signs in.
+func (a *App) checkinLoop(ctx context.Context) {
+	for {
+		now := time.Now()
+		delay := checkin.UntilNext(now, a.cfg.CheckinHour, a.cfg.CheckinMinute, a.checkinLoc())
+		next := now.Add(delay).In(a.checkinLoc())
+		a.log.Info("next check-in scheduled",
+			"at", next.Format("2006-01-02 15:04:05"),
+			"in", delay.Round(time.Second).String())
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		err := a.RunCheckins(runCtx)
+		cancel()
+		if err != nil {
+			a.log.Error("check-in failed", "err", err)
 		}
 	}
 }

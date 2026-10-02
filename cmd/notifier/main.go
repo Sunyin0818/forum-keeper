@@ -24,6 +24,7 @@ var version = "dev"
 func main() {
 	var (
 		once          = flag.Bool("once", false, "run a single poll and exit")
+		checkin       = flag.Bool("checkin", false, "run the daily check-in once and exit")
 		dryRun        = flag.Bool("dry-run", false, "log what would be pushed without sending or mutating state")
 		notifyStartup = flag.Bool("notify-startup", false, "send the startup message and exit (webhook smoke test)")
 		showVersion   = flag.Bool("version", false, "print version and exit")
@@ -79,6 +80,14 @@ func main() {
 	if *once {
 		if _, err := service.PollOnce(ctx); err != nil {
 			logger.Error("poll failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *checkin {
+		if err := service.RunCheckins(ctx); err != nil {
+			logger.Error("check-in failed", "err", err)
 			os.Exit(1)
 		}
 		return

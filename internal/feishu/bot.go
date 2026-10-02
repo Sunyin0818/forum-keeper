@@ -47,6 +47,11 @@ func (b *Bot) Startup(ctx context.Context, lines []string) error {
 	return b.client.SendCard(ctx, BuildStartupCard(lines, time.Now()))
 }
 
+// Checkin reports the outcome of the daily check-in for every configured site.
+func (b *Bot) Checkin(ctx context.Context, entries []CheckinEntry) error {
+	return b.client.SendCard(ctx, BuildCheckinCard(entries, time.Now()))
+}
+
 // resolveTitles lazily looks up topic titles, tolerating failures: a missing
 // title is not worth failing the whole notification.
 //

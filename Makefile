@@ -2,7 +2,7 @@ BINARY := bin/notifier
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO ?= go
 
-.PHONY: all build test vet fmt lint clean run-once run dry-run image up down logs
+.PHONY: all build test vet fmt lint clean run-once run dry-run checkin checkin-dry-run image up down logs
 
 all: test build
 
@@ -32,6 +32,13 @@ run-once:
 
 run:
 	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier
+
+# Signs in to every configured site once. The dry-run variant prints only.
+checkin:
+	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier --checkin
+
+checkin-dry-run:
+	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier --checkin --dry-run
 
 # --- containers (docker and podman both work) -------------------------------
 

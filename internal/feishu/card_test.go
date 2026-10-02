@@ -219,6 +219,69 @@ func TestCardMarshalsToValidJSON(t *testing.T) {
 	}
 }
 
+func TestBuildCheckinCard(t *testing.T) {
+	at := time.Date(2026, 10, 2, 6, 0, 5, 0, time.Local)
+	entries := []CheckinEntry{
+		{Site: "V2EX", OK: true, Detail: "获得 18 铜币"},
+		{Site: "2libra", OK: false, Detail: "Cookie 已失效（HTTP 401）"},
+	}
+
+	card := BuildCheckinCard(entries, at)
+	if card.Header == nil || card.Header.Template != "orange" {
+		t.Fatalf("unexpected header: %+v", card.Header)
+	}
+	if !strings.Contains(card.Header.Title.Content, "1/2") {
+		t.Fatalf("unexpected title %q", card.Header.Title.Content)
+	}
+	if len(card.Elements) != 2 {
+		t.Fatalf("expected body + note, got %d elements", len(card.Elements))
+	}
+
+	div, ok := card.Elements[0].(*DivElement)
+	if !ok {
+		t.Fatalf("first element is %T", card.Elements[0])
+	}
+	// plain_text keeps URLs and markup-looking detail text from being parsed.
+	if div.Text.Tag != "plain_text" {
+		t.Fatalf("check-in body should be plain_text, got %q", div.Text.Tag)
+	}
+	for _, want := range []string{"V2EX", "获得 18 铜币", "2libra", "HTTP 401"} {
+		if !strings.Contains(div.Text.Content, want) {
+			t.Errorf("body missing %q:\n%s", want, div.Text.Content)
+		}
+	}
+
+	b, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), "签到时间 2026-10-02 06:00:05") {
+		t.Fatalf("unexpected card JSON: %s", b)
+	}
+}
+
+func TestBuildCheckinCardAllSuccess(t *testing.T) {
+	entries := []CheckinEntry{
+		{Site: "V2EX", OK: true, Detail: "今日已签过"},
+		{Site: "2libra", OK: true, Detail: "签到成功"},
+	}
+	card := BuildCheckinCard(entries, time.Now())
+	if card.Header.Template != "green" || !strings.Contains(card.Header.Title.Content, "全部成功") {
+		t.Fatalf("unexpected header: %+v", card.Header)
+	}
+}
+
+func TestBuildCheckinCardSingleSite(t *testing.T) {
+	card := BuildCheckinCard([]CheckinEntry{{Site: "V2EX", OK: true, Detail: ""}}, time.Now())
+	if card.Header.Title.Content != "✅ 每日签到 · V2EX" {
+		t.Fatalf("unexpected title %q", card.Header.Title.Content)
+	}
+	div := card.Elements[0].(*DivElement)
+	if !strings.Contains(div.Text.Content, "无详情") {
+		t.Fatalf("empty detail should fall back: %q", div.Text.Content)
+	}
+}
+
 func TestBuildStartupCard(t *testing.T) {
 	at := time.Date(2026, 9, 29, 15, 30, 0, 0, time.Local)
 	card := BuildStartupCard([]string{"版本: 1.2.3", "账号: @tester (id 1)"}, at)

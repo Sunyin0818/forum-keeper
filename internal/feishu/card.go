@@ -115,6 +115,14 @@ type NoteElement struct {
 	Elements []TextNode `json:"elements"`
 }
 
+// CheckinEntry is one site's result, as rendered into the daily check-in card.
+// It deliberately carries no markup: Detail is shown as plain_text.
+type CheckinEntry struct {
+	Site   string
+	OK     bool
+	Detail string
+}
+
 func div(content string) *DivElement {
 	return &DivElement{
 		Tag:  "div",
@@ -245,6 +253,70 @@ func notificationElement(it v2ex.Notification, titles map[int]string) *DivElemen
 		}
 	}
 	return el
+}
+
+// BuildCheckinCard renders the daily check-in summary.
+//
+// The body is plain_text on purpose: site details can contain URLs, angle
+// brackets and asterisks, all of which lark_md would happily mangle.
+func BuildCheckinCard(entries []CheckinEntry, at time.Time) Card {
+	okCount := 0
+	for _, e := range entries {
+		if e.OK {
+			okCount++
+		}
+	}
+
+	template := "green"
+	title := fmt.Sprintf("✅ 每日签到 · %d 个站点全部成功", len(entries))
+	if okCount < len(entries) {
+		template = "orange"
+		title = fmt.Sprintf("⚠️ 每日签到 · %d/%d 成功", okCount, len(entries))
+	}
+	if len(entries) == 1 {
+		icon := "✅"
+		if !entries[0].OK {
+			icon = "❌"
+		}
+		title = fmt.Sprintf("%s 每日签到 · %s", icon, entries[0].Site)
+	}
+
+	card := Card{
+		Config: CardConfig{WideScreenMode: true},
+		Header: &CardHeader{Template: template, Title: plain(title)},
+	}
+
+	var sb strings.Builder
+	for i, e := range entries {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		icon := "✅"
+		if !e.OK {
+			icon = "❌"
+		}
+		sb.WriteString(icon)
+		sb.WriteString(" ")
+		sb.WriteString(e.Site)
+		sb.WriteString("\n")
+		sb.WriteString("    └ ")
+		sb.WriteString(firstLineOr(e.Detail, "无详情"))
+	}
+
+	card.Elements = append(card.Elements,
+		&DivElement{Tag: "div", Text: &TextNode{Tag: "plain_text", Content: sb.String()}},
+		&NoteElement{Tag: "note", Elements: []TextNode{{Tag: "plain_text", Content: "签到时间 " + at.Local().Format("2006-01-02 15:04:05")}}},
+	)
+	return card
+}
+
+// firstLineOr collapses whitespace and falls back when the detail is empty.
+func firstLineOr(s, fallback string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // --- helpers ---------------------------------------------------------------

@@ -19,7 +19,7 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-STATE = {"polls": 0, "hooks": [], "deleted": []}
+STATE = {"polls": 0, "hooks": [], "deleted": [], "mission_claimed": False}
 
 TOPIC_ID = 555
 TOPIC_TITLE = "关于 xxx 的讨论"
@@ -86,8 +86,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _html(self, html_body, code=200):
+        body = html_body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        # V2EX daily-bonus mission (cookie-authenticated web page).
+        if path == "/mission/daily":
+            if STATE["mission_claimed"]:
+                return self._html("<html>每日登录奖励已领取</html>")
+            return self._html('<html><a href="/mission/daily/redeem?once=4242">领取</a></html>')
+        if path == "/mission/daily/redeem":
+            STATE["mission_claimed"] = True
+            return self._html("<html>已成功领取每日登录奖励 42 铜币</html>")
         if path == "/api/v2/member":
             return self._json({"result": {"id": 1, "username": "tester"}})
         if path == "/api/v2/notifications":
@@ -107,6 +123,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/hook":
             STATE["hooks"].append(json.loads(raw))
             return self._json({"code": 0, "msg": "success"})
+        # 2libra check-in.
+        if self.path == "/api/sign":
+            return self._json(
+                {"c": 201, "m": "签到成功", "d": "<p>签到勤勉检定 +1。</p>"}, 201
+            )
         return self._json({"message": "not found"}, 404)
 
     def do_DELETE(self):

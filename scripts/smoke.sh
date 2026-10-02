@@ -49,6 +49,11 @@ echo "==> run 2: pushes the newly arrived notification"
 echo "==> run 3: MARK_READ deletes the pushed notification"
 MARK_READ=true "$WORK/notifier" --once
 
+echo "==> run 4: daily check-in for both sites"
+V2EX_COOKIE="A2=smoke" V2EX_WEB_BASE_URL="$BASE" \
+  LIBRA_COOKIE="access_token=smoke" LIBRA_BASE_URL="$BASE" \
+  "$WORK/notifier" --checkin
+
 python3 - "$BASE" <<'PY'
 import json
 import sys
@@ -57,13 +62,13 @@ import urllib.request
 state = json.load(urllib.request.urlopen(sys.argv[1] + "/__hooks"))
 hooks, deleted = state["hooks"], state["deleted"]
 
-if len(hooks) != 3:
-    raise SystemExit("expected 3 cards, got %d: %s" % (len(hooks), hooks))
+if len(hooks) != 4:
+    raise SystemExit("expected 4 cards, got %d: %s" % (len(hooks), hooks))
 
 def blob(card):
     return json.dumps(card, ensure_ascii=False)
 
-startup, first, second = blob(hooks[0]), blob(hooks[1]), blob(hooks[2])
+startup, first, second, checkin = (blob(h) for h in hooks)
 
 # run 0: startup card
 assert hooks[0]["msg_type"] == "interactive", startup
@@ -80,15 +85,23 @@ assert "https://www.v2ex.com/t/555" in first, first
 assert "dave" in second, second
 assert deleted == [4], "expected [4] deleted, got %s" % deleted
 
+# run 4: daily check-in card for V2EX + 2libra
+assert hooks[3]["msg_type"] == "interactive", checkin
+assert hooks[3]["card"]["header"]["template"] == "green", checkin
+assert "每日签到" in checkin, checkin
+assert "V2EX" in checkin and "2libra" in checkin, checkin
+assert "42 铜币" in checkin, checkin
+assert "签到勤勉检定" in checkin, checkin
+
 # Real V2EX notifications carry an HTML fragment in `text`. None of that markup
 # may reach the card.
-for name, payload in (("startup", startup), ("carol", first), ("dave", second)):
-    for bad in ("<a ", "</a>", "<strong>", "topic-link", "target="):
+for name, payload in (("startup", startup), ("carol", first), ("dave", second), ("check-in", checkin)):
+    for bad in ("<a ", "</a>", "<strong>", "topic-link", "target=", "<p>"):
         assert bad not in payload, "%s card leaked markup %r: %s" % (name, bad, payload)
 
 # The action label must be the derived short phrase, not the raw text.
 assert "感谢了你的主题" in first, first
 assert "回复了你" in second, second
 
-print("smoke OK: startup card + 2 notification cards, no HTML leaked, 1 marked read")
+print("smoke OK: startup card + 2 notification cards + check-in card, no HTML leaked, 1 marked read")
 PY

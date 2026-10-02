@@ -17,6 +17,18 @@ const (
 	FirstRunPush = "push" // push existing notifications on first poll
 
 	DefaultBaseURL = "https://www.v2ex.com/api/v2"
+
+	// Web origin used by the V2EX daily-bonus mission. The API token does not
+	// authenticate this page; it needs the A2 session cookie.
+	DefaultV2EXWebBaseURL = "https://www.v2ex.com"
+	// 2libra forum origin, used by the check-in POST /api/sign.
+	DefaultLibraBaseURL = "https://2libra.com"
+
+	// DefaultDailyCheckinTime is the local time of the daily check-in run.
+	DefaultDailyCheckinTime = "06:00"
+	// DefaultCheckinTimezone keeps the schedule at a fixed wall-clock time no
+	// matter where the container runs (Docker defaults to UTC).
+	DefaultCheckinTimezone = "Asia/Shanghai"
 )
 
 // Config is the fully resolved runtime configuration.
@@ -43,6 +55,18 @@ type Config struct {
 	// Startup notification
 	StartupMessage         bool
 	StartupMessageCooldown time.Duration
+
+	// Daily check-in
+	CheckinEnabled  bool           // master switch for the check-in scheduler
+	CheckinOnStart  bool           // also run once at startup (guarded per day)
+	CheckinHour     int            // 0-23, in CheckinLocation
+	CheckinMinute   int            // 0-59
+	CheckinLocation *time.Location // time zone of the schedule above
+	V2EXCookie      string         // A2 (and A2O for 2FA) cookie for the mission page
+	V2EXWebBaseURL  string
+	LibraCookie     string // access_token cookie for 2libra
+	LibraToken      string // alternative Authorization: Bearer token for 2libra
+	LibraBaseURL    string
 }
 
 // Load reads configuration from the environment and validates it.
@@ -57,6 +81,12 @@ func Load() (*Config, error) {
 		FirstRun:      strings.ToLower(envStr("FIRST_RUN", FirstRunSkip)),
 		LogLevel:      strings.ToLower(envStr("LOG_LEVEL", "info")),
 		FilterTypes:   envList("FILTER_TYPES"),
+
+		V2EXCookie:     envStr("V2EX_COOKIE", ""),
+		V2EXWebBaseURL: strings.TrimRight(envStr("V2EX_WEB_BASE_URL", DefaultV2EXWebBaseURL), "/"),
+		LibraCookie:    envStr("LIBRA_COOKIE", ""),
+		LibraToken:     envStr("LIBRA_TOKEN", ""),
+		LibraBaseURL:   strings.TrimRight(envStr("LIBRA_BASE_URL", DefaultLibraBaseURL), "/"),
 	}
 
 	if cfg.HTTPTimeout, err = envDuration("HTTP_TIMEOUT", 20*time.Second); err != nil {
@@ -79,6 +109,19 @@ func Load() (*Config, error) {
 	}
 	if cfg.StartupMessageCooldown, err = envDuration("STARTUP_MESSAGE_COOLDOWN", 10*time.Minute); err != nil {
 		return nil, err
+	}
+	if cfg.CheckinEnabled, err = envBool("CHECKIN_ENABLED", true); err != nil {
+		return nil, err
+	}
+	if cfg.CheckinOnStart, err = envBool("CHECKIN_ON_START", false); err != nil {
+		return nil, err
+	}
+	if cfg.CheckinHour, cfg.CheckinMinute, err = parseClock(envStr("CHECKIN_TIME", DefaultDailyCheckinTime)); err != nil {
+		return nil, err
+	}
+	tz := envStr("CHECKIN_TZ", DefaultCheckinTimezone)
+	if cfg.CheckinLocation, err = time.LoadLocation(tz); err != nil {
+		return nil, fmt.Errorf("config: CHECKIN_TZ=%q is not a valid IANA time zone: %w", tz, err)
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -124,6 +167,26 @@ func (c *Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// parseClock parses "HH:MM" into hour and minute.
+func parseClock(raw string) (int, int, error) {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("config: CHECKIN_TIME=%q must look like HH:MM", raw)
+	}
+	hour, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("config: CHECKIN_TIME=%q has an invalid hour: %w", raw, err)
+	}
+	minute, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("config: CHECKIN_TIME=%q has an invalid minute: %w", raw, err)
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, 0, fmt.Errorf("config: CHECKIN_TIME=%q is out of range (00:00-23:59)", raw)
+	}
+	return hour, minute, nil
 }
 
 func envStr(key, def string) string {

@@ -198,3 +198,48 @@ func TestSetStartupOnEmptyReadOnlyStoreIsNoop(t *testing.T) {
 		t.Fatalf("LastStartup = %v, %v; want zero", got, err)
 	}
 }
+
+func TestCheckinTimestampRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if got, err := s.LastCheckin(); err != nil || !got.IsZero() {
+		t.Fatalf("LastCheckin = %v, %v; want zero", got, err)
+	}
+
+	want := time.Unix(1759384805, 0)
+	if err := s.SetCheckin(want); err != nil {
+		t.Fatalf("SetCheckin: %v", err)
+	}
+	got, err := s.LastCheckin()
+	if err != nil {
+		t.Fatalf("LastCheckin: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("LastCheckin = %v, want %v", got, want)
+	}
+
+	// The check-in marker is metadata, not a seen notification.
+	if n, err := s.Count(); err != nil || n != 0 {
+		t.Fatalf("Count = %d, %v; want 0", n, err)
+	}
+}
+
+func TestSetCheckinOnEmptyReadOnlyStoreIsNoop(t *testing.T) {
+	s, err := OpenRead(filepath.Join(t.TempDir(), "absent", "state.db"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	defer s.Close()
+
+	if err := s.SetCheckin(time.Now()); err != nil {
+		t.Fatalf("SetCheckin on read-only store: %v", err)
+	}
+	if got, err := s.LastCheckin(); err != nil || !got.IsZero() {
+		t.Fatalf("LastCheckin = %v, %v; want zero", got, err)
+	}
+}

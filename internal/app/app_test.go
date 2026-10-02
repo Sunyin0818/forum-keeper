@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sunyin0818/v2ex-notifier/internal/checkin"
 	"github.com/Sunyin0818/v2ex-notifier/internal/config"
+	"github.com/Sunyin0818/v2ex-notifier/internal/feishu"
 	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
 )
 
@@ -69,6 +71,7 @@ type fakeState struct {
 	seen    map[int]bool
 	markErr error
 	startup time.Time
+	checkin time.Time
 }
 
 func newFakeState() *fakeState { return &fakeState{seen: map[int]bool{}} }
@@ -77,6 +80,13 @@ func (s *fakeState) LastStartup() (time.Time, error) { return s.startup, nil }
 
 func (s *fakeState) SetStartup(at time.Time) error {
 	s.startup = at
+	return nil
+}
+
+func (s *fakeState) LastCheckin() (time.Time, error) { return s.checkin, nil }
+
+func (s *fakeState) SetCheckin(at time.Time) error {
+	s.checkin = at
 	return nil
 }
 
@@ -106,6 +116,7 @@ type fakeNotifier struct {
 	batches  [][]int
 	alerts   []string
 	startups [][]string
+	checkins [][]feishu.CheckinEntry
 	err      error
 }
 
@@ -131,6 +142,14 @@ func (n *fakeNotifier) Startup(_ context.Context, lines []string) error {
 		return n.err
 	}
 	n.startups = append(n.startups, lines)
+	return nil
+}
+
+func (n *fakeNotifier) Checkin(_ context.Context, entries []feishu.CheckinEntry) error {
+	if n.err != nil {
+		return n.err
+	}
+	n.checkins = append(n.checkins, entries)
 	return nil
 }
 
@@ -503,5 +522,156 @@ func TestStartupLinesDoNotLeakProxyCredentials(t *testing.T) {
 	// Report which variable supplied it - the name is useful, the value is not.
 	if !strings.Contains(lines, "HTTPS_PROXY") {
 		t.Fatalf("proxy label should name the variable:\n%s", lines)
+	}
+}
+
+// --- daily check-in --------------------------------------------------------
+
+type fakeSite struct {
+	name   string
+	result checkin.Result
+	calls  int
+}
+
+func (s *fakeSite) Name() string { return s.name }
+
+func (s *fakeSite) SignIn(context.Context) checkin.Result {
+	s.calls++
+	res := s.result
+	res.Site = s.name
+	res.At = time.Now()
+	return res
+}
+
+func TestRunCheckinsReportsEverySite(t *testing.T) {
+	st := newFakeState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+
+	v2 := &fakeSite{name: "V2EX", result: checkin.Result{Status: checkin.StatusSuccess, Detail: "获得 18 铜币"}}
+	libra := &fakeSite{name: "2libra", result: checkin.Result{Status: checkin.StatusFailed, Detail: "Cookie 已失效"}}
+	a.SetCheckinSites([]checkin.Site{v2, libra})
+
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("RunCheckins: %v", err)
+	}
+	if v2.calls != 1 || libra.calls != 1 {
+		t.Fatalf("each site must run once: v2=%d libra=%d", v2.calls, libra.calls)
+	}
+	if len(n.checkins) != 1 {
+		t.Fatalf("expected one check-in card, got %d", len(n.checkins))
+	}
+	entries := n.checkins[0]
+	if len(entries) != 2 || entries[0].Site != "V2EX" || entries[1].Site != "2libra" {
+		t.Fatalf("unexpected entries: %+v", entries)
+	}
+	if !entries[0].OK || entries[1].OK {
+		t.Fatalf("OK flags wrong: %+v", entries)
+	}
+	if st.checkin.IsZero() {
+		t.Fatal("check-in time should be recorded after a successful send")
+	}
+}
+
+func TestRunCheckinsRecordsNothingWhenCardFails(t *testing.T) {
+	st := newFakeState()
+	n := &fakeNotifier{err: errors.New("webhook down")}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+	a.SetCheckinSites([]checkin.Site{&fakeSite{name: "V2EX", result: checkin.Result{Status: checkin.StatusSuccess}}})
+
+	if err := a.RunCheckins(context.Background()); err == nil {
+		t.Fatal("expected a send error")
+	}
+	if !st.checkin.IsZero() {
+		t.Fatal("a failed card must not be recorded as done")
+	}
+}
+
+func TestRunCheckinsNoSitesIsNoop(t *testing.T) {
+	st := newFakeState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("RunCheckins: %v", err)
+	}
+	if len(n.checkins) != 0 || !st.checkin.IsZero() {
+		t.Fatalf("no sites should do nothing: checkins=%d recorded=%v", len(n.checkins), st.checkin)
+	}
+}
+
+func TestCheckinOnStartIsGuardedPerDay(t *testing.T) {
+	cfg := baseConfig()
+	cfg.CheckinOnStart = true
+	cfg.CheckinLocation = time.UTC
+
+	st := newFakeState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
+	s := &fakeSite{name: "V2EX", result: checkin.Result{Status: checkin.StatusSuccess}}
+	a.SetCheckinSites([]checkin.Site{s})
+
+	a.maybeCheckinOnStart(context.Background())
+	if s.calls != 1 {
+		t.Fatalf("first start should run the check-in, calls=%d", s.calls)
+	}
+
+	// A restart later the same day must not sign in (or notify) again.
+	a.maybeCheckinOnStart(context.Background())
+	if s.calls != 1 {
+		t.Fatalf("same-day restart re-ran the check-in, calls=%d", s.calls)
+	}
+	if len(n.checkins) != 1 {
+		t.Fatalf("expected exactly one card, got %d", len(n.checkins))
+	}
+}
+
+func TestCheckinOnStartSkippedYesterdayRuns(t *testing.T) {
+	cfg := baseConfig()
+	cfg.CheckinOnStart = true
+	cfg.CheckinLocation = time.UTC
+
+	st := newFakeState()
+	st.checkin = time.Now().UTC().Add(-25 * time.Hour)
+	n := &fakeNotifier{}
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
+	s := &fakeSite{name: "V2EX", result: checkin.Result{Status: checkin.StatusAlready}}
+	a.SetCheckinSites([]checkin.Site{s})
+
+	a.maybeCheckinOnStart(context.Background())
+	if s.calls != 1 {
+		t.Fatalf("yesterday's run must not block today, calls=%d", s.calls)
+	}
+}
+
+func TestCheckinOnStartDisabled(t *testing.T) {
+	cfg := baseConfig()
+	cfg.CheckinOnStart = false
+
+	n := &fakeNotifier{}
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, newFakeState(), n)
+	s := &fakeSite{name: "V2EX", result: checkin.Result{Status: checkin.StatusSuccess}}
+	a.SetCheckinSites([]checkin.Site{s})
+
+	a.maybeCheckinOnStart(context.Background())
+	if s.calls != 0 {
+		t.Fatalf("CHECKIN_ON_START=false must not run, calls=%d", s.calls)
+	}
+}
+
+func TestBuildCheckinSitesHonoursCredentials(t *testing.T) {
+	none := buildCheckinSites(&config.Config{CheckinEnabled: true})
+	if len(none) != 0 {
+		t.Fatalf("no credentials should yield no sites, got %d", len(none))
+	}
+
+	disabled := buildCheckinSites(&config.Config{CheckinEnabled: false, V2EXCookie: "A2=x", LibraCookie: "access_token=y"})
+	if len(disabled) != 0 {
+		t.Fatalf("CHECKIN_ENABLED=false must disable all sites, got %d", len(disabled))
+	}
+
+	both := buildCheckinSites(&config.Config{CheckinEnabled: true, V2EXCookie: "A2=x", LibraToken: "jwt"})
+	if len(both) != 2 {
+		t.Fatalf("expected 2 sites, got %d", len(both))
 	}
 }

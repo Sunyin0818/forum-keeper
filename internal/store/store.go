@@ -19,7 +19,10 @@ var (
 	metaBucket = []byte("meta")
 )
 
-const startupKey = "startup_at"
+const (
+	startupKey = "startup_at"
+	checkinKey = "checkin_at"
+)
 
 // Store is a bbolt-backed set of seen notification IDs.
 type Store struct {
@@ -205,4 +208,56 @@ func (s *Store) SetStartup(at time.Time) error {
 		return fmt.Errorf("store: set startup: %w", err)
 	}
 	return nil
+}
+
+// LastCheckin returns when the daily check-in last ran, or the zero time if it
+// never did. It is used to keep CHECKIN_ON_START from re-running on every
+// container restart within the same day.
+func (s *Store) LastCheckin() (time.Time, error) {
+	return s.metaTime(checkinKey, "last check-in")
+}
+
+// SetCheckin records when the daily check-in last ran. It is a no-op on a
+// read-only (empty) store.
+func (s *Store) SetCheckin(at time.Time) error {
+	if s.db == nil {
+		return nil
+	}
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(metaBucket)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(checkinKey), []byte(strconv.FormatInt(at.Unix(), 10)))
+	}); err != nil {
+		return fmt.Errorf("store: set check-in: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) metaTime(key, label string) (time.Time, error) {
+	if s.db == nil {
+		return time.Time{}, nil
+	}
+	var t time.Time
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(metaBucket)
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte(key))
+		if v == nil {
+			return nil
+		}
+		sec, err := strconv.ParseInt(string(v), 10, 64)
+		if err != nil {
+			return nil // tolerate a corrupt value rather than failing
+		}
+		t = time.Unix(sec, 0)
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("store: %s: %w", label, err)
+	}
+	return t, nil
 }

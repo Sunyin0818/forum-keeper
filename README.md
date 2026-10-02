@@ -1,9 +1,12 @@
 # v2ex-notifier
 
-轮询 V2EX 提醒，发现新消息时通过飞书自定义机器人推送**交互卡片**。
+一个服务做两件事：
+
+1. **提醒**：轮询 V2EX 提醒，发现新消息时通过飞书自定义机器人推送**交互卡片**。
+2. **签到**：每天定时给 **V2EX** 和 **2libra** 签到，结果汇总成一张飞书卡片。
 
 - 数据源：V2EX API 2.0 `GET /api/v2/notifications`
-- 认证：Personal Access Token（`Authorization: Bearer ...`）
+- 认证：Personal Access Token（`Authorization: Bearer ...`）；签到另需站点 Cookie
 - 去重：本地 bbolt 保存已推送过的 `notification.id`
 - 推送：飞书 webhook，支持签名校验、失败重试、多条聚合
 - 部署：单容器（Docker / Podman 均可），distroless 风格，非 root 运行
@@ -79,6 +82,58 @@ docker compose logs -f      # 或 podman compose logs -f
 | `HTTP_TIMEOUT` | `20s` | 单次请求超时 |
 | `STATE_PATH` | `state.db` | 状态文件路径；容器内由 compose 覆盖为 `/data/state.db` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `CHECKIN_ENABLED` | `true` | 签到总开关；`false` 时即使填了 Cookie 也不签到 |
+| `CHECKIN_TIME` | `06:00` | 每日签到时间（`HH:MM`，配合 `CHECKIN_TZ`） |
+| `CHECKIN_TZ` | `Asia/Shanghai` | 签到时间的时区（IANA 名称） |
+| `CHECKIN_ON_START` | `false` | 启动时也签一次；同一天重启会跳过，不会刷屏 |
+| `V2EX_COOKIE` | 空 | V2EX 会话 Cookie（`A2=...`，2FA 账号还需 `A2O`）。填了才启用 V2EX 签到 |
+| `LIBRA_COOKIE` | 空 | 2libra 的 `access_token=...` Cookie。填了才启用 2libra 签到 |
+| `LIBRA_TOKEN` | 空 | 2libra 的 Bearer Token（与 `LIBRA_COOKIE` 二选一，Cookie 优先） |
+| `V2EX_WEB_BASE_URL` | `https://www.v2ex.com` | V2EX 网页源（签到用；一般不用改） |
+| `LIBRA_BASE_URL` | `https://2libra.com` | 2libra 源（一般不用改） |
+
+### 每日签到
+
+签到对两个站点分别执行，最后合并成**一张**飞书卡片：
+
+```
+┌────────────────────────────────────┐
+│ ⚠️ 每日签到 · 1/2 成功              │
+├────────────────────────────────────┤
+│ ✅ V2EX                            │
+│     └ 获得 18 铜币                  │
+│ ❌ 2libra                          │
+│     └ Cookie 已失效（HTTP 401）     │
+├────────────────────────────────────┤
+│ 签到时间 2026-10-02 06:00:05       │
+└────────────────────────────────────┘
+```
+
+**站点凭据怎么拿：**
+
+| 站点 | 拿法 |
+|---|---|
+| V2EX | 登录 v2ex.com → F12 → Application → Cookies → `https://www.v2ex.com`，复制 `A2` 的值（开了 2FA 要连 `A2O` 一起），拼成 `A2=...; A2O=...` |
+| 2libra | 登录 2libra.com → F12 → Network → 任一请求 → 请求头 `cookie`，取 `access_token=` 后面的值，拼成 `access_token=...`（也可改用 `LIBRA_TOKEN`） |
+
+> V2EX 签到走的是网页 `/mission/daily`，**只认 Cookie，不认上面的 API Token**，两者都要配。
+
+**设计要点：**
+
+- **签到幂等**：站点返回「今天已经签到过了」按成功处理，重复执行不会报错。
+- **一张卡片**：两个站点的结果合并推送，不会一次发两条。
+- **失败不中断**：一个站点 401 不影响另一个站点签到，卡片里逐条列明。
+- **手动触发**：`./bin/notifier --checkin`（`--dry-run` 只打印不发送）。
+- **重启不重复**：`CHECKIN_ON_START=true` 时，同一天的重启会跳过（时间戳记录在状态库里）。
+- **不再依赖 GitHub Actions**：签到调度在容器内完成，因此没有「仓库 60 天无活动 → 定时任务被自动停用」这个问题。
+
+手动跑一次：
+
+```bash
+set -a; . ./.env; set +a
+./bin/notifier --checkin            # 真签到 + 推送
+./bin/notifier --checkin --dry-run  # 只打印结果，不推送、不记录
+```
 
 ## 验证（不打扰群里任何人）
 
@@ -122,6 +177,7 @@ level=INFO msg="dry-run: would push" id=1234 member=alice text="回复了你的�
 │ 首轮策略: skip                     │
 │ 标记已读: 否                       │
 │ 类型过滤: 全部                     │
+│ 每日签到: V2EX + 2libra（每天 06:00 Asia/Shanghai） │
 │ V2EX 代理: 已设置                  │
 │ 状态文件: /data/state.db           │
 ├────────────────────────────────────┤
@@ -251,7 +307,8 @@ Docker 与 Podman 均可解析。云端用不到这行，但也无害。
 go build -o bin/notifier ./cmd/notifier
 set -a; . ./.env; set +a
 ./bin/notifier            # 常驻
-./bin/notifier --once     # 单次
+./bin/notifier --once     # 单次轮询
+./bin/notifier --checkin  # 立即签到一次
 ```
 
 ## 自动构建并发布镜像
@@ -451,3 +508,15 @@ V2EX 不可达。检查 `HTTPS_PROXY` 是否指向可用的代理、地址是否
 
 **重复推送同一条**
 不会发生：`notification.id` 是稳定的去重键。若手动删除了 `/data/state.db`，会退化成一次「首轮」。
+
+**签到卡片显示 `Cookie 已失效` / `HTTP 401`**
+凭据过期了。V2EX 换 `V2EX_COOKIE`（重新登录后复制 `A2`，2FA 账号还要 `A2O`），2libra 换 `LIBRA_COOKIE`。改完 `.env` 后 `docker compose up -d` 重建容器。
+
+**签到卡片显示 `未找到签到 token`**
+V2EX 的签到页结构变了，或者是页面压根没登录成功。先用浏览器确认 `https://www.v2ex.com/mission/daily` 打开后是签到按钮而不是登录页。
+
+**启动日志出现 `next check-in scheduled` 但时间不对**
+`CHECKIN_TZ` 写错了（必须是 IANA 名称，如 `Asia/Shanghai`），或容器没带 tzdata —— 本项目的镜像已经装了 `tzdata`。
+
+**不想用签到**
+留空 `V2EX_COOKIE` / `LIBRA_COOKIE` / `LIBRA_TOKEN`，或设 `CHECKIN_ENABLED=false`。启动卡片会显示 `每日签到: 未启用`。
