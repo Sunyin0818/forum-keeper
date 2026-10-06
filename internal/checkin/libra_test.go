@@ -9,15 +9,15 @@ import (
 	"time"
 )
 
-func newLibraTestSite(t *testing.T, cookie, token string, handler http.HandlerFunc) *LibraSite {
+func newLibraTestSite(t *testing.T, credential string, handler http.HandlerFunc) *LibraSite {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return NewLibraSite(cookie, token, srv.URL, 5*time.Second)
+	return NewLibraSite(credential, srv.URL, 5*time.Second)
 }
 
 func TestLibraSiteSuccessCreated(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
@@ -35,7 +35,7 @@ func TestLibraSiteSuccessCreated(t *testing.T) {
 }
 
 func TestLibraSiteSuccessOK(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"c":200,"m":"签到成功","d":null}`))
 	})
 
@@ -45,7 +45,7 @@ func TestLibraSiteSuccessOK(t *testing.T) {
 }
 
 func TestLibraSiteAlreadySigned(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"c":200,"m":"你今天已经签到过了，签到时间为：2026-10-01 06:00:00","d":null}`))
 	})
 
@@ -56,7 +56,7 @@ func TestLibraSiteAlreadySigned(t *testing.T) {
 }
 
 func TestLibraSiteUnauthorized(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=stale", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=stale", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"c":401,"m":"Unauthorized","d":null}`))
 	})
@@ -71,7 +71,7 @@ func TestLibraSiteUnauthorized(t *testing.T) {
 }
 
 func TestLibraSiteServerError(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
@@ -82,7 +82,7 @@ func TestLibraSiteServerError(t *testing.T) {
 }
 
 func TestLibraSiteLogicalFailure(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"c":400,"m":"签到失败，请稍后再试","d":null}`))
 	})
 
@@ -92,9 +92,9 @@ func TestLibraSiteLogicalFailure(t *testing.T) {
 	}
 }
 
-func TestLibraSitePrefersCookieAndFallsBackToBearer(t *testing.T) {
+func TestLibraSiteAutoDetectsCredential(t *testing.T) {
 	var cookie, auth string
-	site := newLibraTestSite(t, "access_token=jwt", "bearer-token", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		cookie = r.Header.Get("Cookie")
 		auth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusCreated)
@@ -104,22 +104,27 @@ func TestLibraSitePrefersCookieAndFallsBackToBearer(t *testing.T) {
 		t.Fatalf("Cookie = %q", cookie)
 	}
 	if auth != "" {
-		t.Fatalf("Authorization should be omitted when a cookie is set, got %q", auth)
+		t.Fatalf("Authorization should be omitted for a cookie credential, got %q", auth)
 	}
 
-	var bearer string
-	bearerOnly := newLibraTestSite(t, "", "bearer-token", func(w http.ResponseWriter, r *http.Request) {
+	// A raw token has no '=' or ';', so it is sent as a bearer token instead.
+	var bearer, bearerCookie string
+	bearerSite := newLibraTestSite(t, "eyJhbGciOiJI.raw.jwt", func(w http.ResponseWriter, r *http.Request) {
 		bearer = r.Header.Get("Authorization")
+		bearerCookie = r.Header.Get("Cookie")
 		w.WriteHeader(http.StatusCreated)
 	})
-	bearerOnly.SignIn(context.Background())
-	if bearer != "Bearer bearer-token" {
+	bearerSite.SignIn(context.Background())
+	if bearer != "Bearer eyJhbGciOiJI.raw.jwt" {
 		t.Fatalf("Authorization = %q", bearer)
+	}
+	if bearerCookie != "" {
+		t.Fatalf("Cookie should be omitted for a bearer credential, got %q", bearerCookie)
 	}
 }
 
 func TestLibraSiteNonJSONBodyStillDetected(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`<html><b>签到成功</b></html>`))
 	})
@@ -130,7 +135,7 @@ func TestLibraSiteNonJSONBodyStillDetected(t *testing.T) {
 }
 
 func TestLibraSiteEnvelopeCode201WithHTTP200(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"c":201,"m":"签到成功","d":null}`))
 	})
 
@@ -141,12 +146,8 @@ func TestLibraSiteEnvelopeCode201WithHTTP200(t *testing.T) {
 }
 
 func TestLibraSiteRetriesTransientFailures(t *testing.T) {
-	old := retryBase
-	retryBase = time.Millisecond
-	t.Cleanup(func() { retryBase = old })
-
 	var calls int
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls < 3 {
 			w.WriteHeader(http.StatusBadGateway)
@@ -165,7 +166,7 @@ func TestLibraSiteRetriesTransientFailures(t *testing.T) {
 }
 
 func TestLibraSiteCloudflareChallenge(t *testing.T) {
-	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		w.Write([]byte(`<html><title>Just a moment...</title>Attention Required! | Cloudflare</html>`))
 	})

@@ -660,17 +660,17 @@ func TestCheckinOnStartDisabled(t *testing.T) {
 }
 
 func TestBuildCheckinSitesHonoursCredentials(t *testing.T) {
-	none := buildCheckinSites(&config.Config{CheckinEnabled: true})
+	none := buildCheckinSites(&config.Config{})
 	if len(none) != 0 {
 		t.Fatalf("no credentials should yield no sites, got %d", len(none))
 	}
 
-	disabled := buildCheckinSites(&config.Config{CheckinEnabled: false, V2EXCookie: "A2=x", LibraCookie: "access_token=y"})
-	if len(disabled) != 0 {
-		t.Fatalf("CHECKIN_ENABLED=false must disable all sites, got %d", len(disabled))
+	v2only := buildCheckinSites(&config.Config{V2EXCookie: "A2=x"})
+	if len(v2only) != 1 {
+		t.Fatalf("expected 1 site, got %d", len(v2only))
 	}
 
-	both := buildCheckinSites(&config.Config{CheckinEnabled: true, V2EXCookie: "A2=x", LibraToken: "jwt"})
+	both := buildCheckinSites(&config.Config{V2EXCookie: "A2=x", LibraCookie: "access_token=y"})
 	if len(both) != 2 {
 		t.Fatalf("expected 2 sites, got %d", len(both))
 	}

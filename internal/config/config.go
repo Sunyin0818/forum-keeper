@@ -26,9 +26,6 @@ const (
 
 	// DefaultDailyCheckinTime is the local time of the daily check-in run.
 	DefaultDailyCheckinTime = "06:00"
-	// DefaultCheckinTimezone keeps the schedule at a fixed wall-clock time no
-	// matter where the container runs (Docker defaults to UTC).
-	DefaultCheckinTimezone = "Asia/Shanghai"
 )
 
 // Config is the fully resolved runtime configuration.
@@ -56,16 +53,15 @@ type Config struct {
 	StartupMessage         bool
 	StartupMessageCooldown time.Duration
 
-	// Daily check-in
-	CheckinEnabled  bool           // master switch for the check-in scheduler
-	CheckinOnStart  bool           // also run once at startup (guarded per day)
-	CheckinHour     int            // 0-23, in CheckinLocation
-	CheckinMinute   int            // 0-59
-	CheckinLocation *time.Location // time zone of the schedule above
+	// Daily check-in. There is no enable switch: a site is enabled precisely
+	// when its credential is set, and disabling it means clearing that line.
+	CheckinOnStart  bool
+	CheckinHour     int
+	CheckinMinute   int
+	CheckinLocation *time.Location // always time.Local; not an env knob
 	V2EXCookie      string         // A2 (and A2O for 2FA) cookie for the mission page
 	V2EXWebBaseURL  string
-	LibraCookie     string // access_token cookie for 2libra
-	LibraToken      string // alternative Authorization: Bearer token for 2libra
+	LibraCookie     string // 2libra credential: "access_token=..." cookie or a raw bearer token
 	LibraBaseURL    string
 }
 
@@ -85,7 +81,6 @@ func Load() (*Config, error) {
 		V2EXCookie:     envStr("V2EX_COOKIE", ""),
 		V2EXWebBaseURL: strings.TrimRight(envStr("V2EX_WEB_BASE_URL", DefaultV2EXWebBaseURL), "/"),
 		LibraCookie:    envStr("LIBRA_COOKIE", ""),
-		LibraToken:     envStr("LIBRA_TOKEN", ""),
 		LibraBaseURL:   strings.TrimRight(envStr("LIBRA_BASE_URL", DefaultLibraBaseURL), "/"),
 	}
 
@@ -110,19 +105,15 @@ func Load() (*Config, error) {
 	if cfg.StartupMessageCooldown, err = envDuration("STARTUP_MESSAGE_COOLDOWN", 10*time.Minute); err != nil {
 		return nil, err
 	}
-	if cfg.CheckinEnabled, err = envBool("CHECKIN_ENABLED", true); err != nil {
-		return nil, err
-	}
 	if cfg.CheckinOnStart, err = envBool("CHECKIN_ON_START", true); err != nil {
 		return nil, err
 	}
 	if cfg.CheckinHour, cfg.CheckinMinute, err = parseClock(envStr("CHECKIN_TIME", DefaultDailyCheckinTime)); err != nil {
 		return nil, err
 	}
-	tz := envStr("CHECKIN_TZ", DefaultCheckinTimezone)
-	if cfg.CheckinLocation, err = time.LoadLocation(tz); err != nil {
-		return nil, fmt.Errorf("config: CHECKIN_TZ=%q is not a valid IANA time zone: %w", tz, err)
-	}
+	// The schedule follows the process time zone, so there is exactly one
+	// timezone knob: the standard TZ (set by compose.yaml).
+	cfg.CheckinLocation = time.Local
 
 	if err := cfg.validate(); err != nil {
 		return nil, err

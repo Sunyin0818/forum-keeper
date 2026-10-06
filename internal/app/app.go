@@ -112,18 +112,15 @@ func NewWithDeps(cfg *config.Config, logger *slog.Logger, dryRun bool, src Fetch
 }
 
 // buildCheckinSites turns credentials in the configuration into sites. A site
-// is only enabled when its credential is present, so an existing deployment
+// is enabled exactly when its credential is present, so an existing deployment
 // that never configured check-in keeps working unchanged.
 func buildCheckinSites(cfg *config.Config) []checkin.Site {
-	if !cfg.CheckinEnabled {
-		return nil
-	}
 	var sites []checkin.Site
 	if cfg.V2EXCookie != "" {
 		sites = append(sites, checkin.NewV2EXSite(cfg.V2EXCookie, cfg.V2EXWebBaseURL, cfg.HTTPTimeout))
 	}
-	if cfg.LibraCookie != "" || cfg.LibraToken != "" {
-		sites = append(sites, checkin.NewLibraSite(cfg.LibraCookie, cfg.LibraToken, cfg.LibraBaseURL, cfg.HTTPTimeout))
+	if cfg.LibraCookie != "" {
+		sites = append(sites, checkin.NewLibraSite(cfg.LibraCookie, cfg.LibraBaseURL, cfg.HTTPTimeout))
 	}
 	return sites
 }

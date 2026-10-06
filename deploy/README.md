@@ -42,12 +42,12 @@ INFO first run: recording existing notifications without pushing  count=N
 
 ```ini
 V2EX_COOKIE=A2=...; A2O=...      # V2EX 网页会话 Cookie（不是 API Token）
-LIBRA_COOKIE=access_token=...    # 2libra
+LIBRA_COOKIE=access_token=...    # 2libra（或直接填裸 token）
 CHECKIN_TIME=06:00
-CHECKIN_TZ=Asia/Shanghai
+TZ=Asia/Shanghai
 ```
 
-默认每天 06:00（`CHECKIN_TZ` 时区）给两个站点各签一次，结果合并成一张飞书卡片。
+默认每天 06:00（容器 `TZ` 时区）给两个站点各签一次，结果合并成一张飞书卡片。
 启动时如果发现今天还没签会自动补签（`CHECKIN_ON_START`，默认开；同一天不会重复）。
 手工触发：
 

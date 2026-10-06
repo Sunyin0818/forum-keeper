@@ -16,6 +16,9 @@ services:
     environment:
       # Container-internal path; always on the mounted volume.
       STATE_PATH: /data/state.db
+      # Wall-clock zone for logs, cards and the check-in schedule. Docker
+      # defaults to UTC, which would run CHECKIN_TIME at the wrong local hour.
+      TZ: ${TZ:-Asia/Shanghai}
       # Podman copies the host's *_proxy variables into containers, where
       # 127.0.0.1 means the container itself - a silently wrong value that looks
       # like a V2EX outage. Docker does not copy them. Clear the inherited

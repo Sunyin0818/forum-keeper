@@ -23,9 +23,12 @@ var (
 
 // LibraSite signs in to 2libra.com.
 //
-// The endpoint is POST /api/sign and accepts either the browser cookie
-// (access_token=...) or an Authorization: Bearer token. Cloudflare sits in
-// front of it, so the browser-like headers matter.
+// The endpoint is POST /api/sign. It accepts either the browser cookie
+// (access_token=...) or an Authorization: Bearer token, so a single credential
+// string is enough: anything without '=' or ';' is treated as a raw bearer
+// token, everything else as a Cookie header.
+//
+// Cloudflare sits in front of it, so the browser-like headers matter.
 type LibraSite struct {
 	baseURL string
 	cookie  string
@@ -33,18 +36,25 @@ type LibraSite struct {
 	hc      *http.Client
 }
 
-// NewLibraSite builds a 2libra signer. Exactly one of cookie / token is
-// normally set; if both are present the cookie wins, matching the browser.
-func NewLibraSite(cookie, token, baseURL string, timeout time.Duration) *LibraSite {
+// NewLibraSite builds a 2libra signer from a cookie string or a raw bearer
+// token.
+func NewLibraSite(credential, baseURL string, timeout time.Duration) *LibraSite {
 	if baseURL == "" {
 		baseURL = DefaultBaseURLLibra
 	}
-	return &LibraSite{
+	site := &LibraSite{
 		baseURL: trimBaseURL(baseURL),
-		cookie:  strings.TrimSpace(cookie),
-		token:   strings.TrimSpace(token),
 		hc:      newHTTPClient(timeout),
 	}
+	credential = strings.TrimSpace(credential)
+	switch {
+	case credential == "":
+	case strings.ContainsAny(credential, "=;"):
+		site.cookie = credential
+	default:
+		site.token = credential
+	}
+	return site
 }
 
 // Name implements Site.

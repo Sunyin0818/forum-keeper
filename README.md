@@ -82,15 +82,11 @@ docker compose logs -f      # 或 podman compose logs -f
 | `HTTP_TIMEOUT` | `20s` | 单次请求超时 |
 | `STATE_PATH` | `state.db` | 状态文件路径；容器内由 compose 覆盖为 `/data/state.db` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `CHECKIN_ENABLED` | `true` | 签到总开关；`false` 时即使填了 Cookie 也不签到 |
-| `CHECKIN_TIME` | `06:00` | 每日签到时间（`HH:MM`，配合 `CHECKIN_TZ`） |
-| `CHECKIN_TZ` | `Asia/Shanghai` | 签到时间的时区（IANA 名称） |
-| `CHECKIN_ON_START` | `true` | 启动时补签：今天还没签就直接签；同一天重启会跳过。设为 `false` 则只等 `CHECKIN_TIME` |
-| `V2EX_COOKIE` | 空 | V2EX 会话 Cookie（`A2=...`，2FA 账号还需 `A2O`）。填了才启用 V2EX 签到 |
-| `LIBRA_COOKIE` | 空 | 2libra 的 `access_token=...` Cookie。填了才启用 2libra 签到 |
-| `LIBRA_TOKEN` | 空 | 2libra 的 Bearer Token（与 `LIBRA_COOKIE` 二选一，Cookie 优先） |
-| `V2EX_WEB_BASE_URL` | `https://www.v2ex.com` | V2EX 网页源（签到用；一般不用改） |
-| `LIBRA_BASE_URL` | `https://2libra.com` | 2libra 源（一般不用改） |
+| `CHECKIN_TIME` | `06:00` | 每日签到时间（`HH:MM`，按容器 `TZ`） |
+| `CHECKIN_ON_START` | `true` | 启动补签：今天还没签就直接签；同一天重启跳过。设为 `false` 则只等 `CHECKIN_TIME` |
+| `TZ` | `Asia/Shanghai` | 时区；调度时间与卡片/日志时间戳都用它 |
+| `V2EX_COOKIE` | 空 | V2EX 会话 Cookie（`A2=...`，2FA 还需 `A2O`）。填了才启用 V2EX 签到 |
+| `LIBRA_COOKIE` | 空 | 2libra 凭据：`access_token=...`，或直接填裸 token（无 `=` 时按 Bearer 发送）。填了才启用 2libra 签到 |
 
 ### 每日签到
 
@@ -113,10 +109,11 @@ docker compose logs -f      # 或 podman compose logs -f
 
 | 站点 | 拿法 |
 |---|---|
-| V2EX | 登录 v2ex.com → F12 → Application → Cookies → `https://www.v2ex.com`，复制 `A2` 的值（开了 2FA 要连 `A2O` 一起），拼成 `A2=...; A2O=...` |
-| 2libra | 登录 2libra.com → F12 → Network → 任一请求 → 请求头 `cookie`，取 `access_token=` 后面的值，拼成 `access_token=...`（也可改用 `LIBRA_TOKEN`） |
+| V2EX | 登录 v2ex.com → F12 → Application → Cookies → `https://www.v2ex.com`，复制 `A2` 的值（开了 2FA 要连 `A2O` 一起），拼成 `A2=...; A2O=...`。最稳是直接复制任一请求头里的整行 `Cookie:` |
+| 2libra | 登录 2libra.com → F12 → Network → 任一请求 → 请求头 `cookie`，取 `access_token=` 后面的值，拼成 `access_token=...`；也可直接填这个值本身（自动按 Bearer 发送） |
 
 > V2EX 签到走的是网页 `/mission/daily`，**只认 Cookie，不认上面的 API Token**，两者都要配。
+> 2libra 站点地址和 V2EX 网页源可用 `LIBRA_BASE_URL` / `V2EX_WEB_BASE_URL` 覆盖，只用于自建或测试，日常不用改。
 
 **设计要点：**
 
@@ -518,7 +515,7 @@ V2EX 不可达。检查 `HTTPS_PROXY` 是否指向可用的代理、地址是否
 V2EX 的签到页结构变了，或者是页面压根没登录成功。先用浏览器确认 `https://www.v2ex.com/mission/daily` 打开后是签到按钮而不是登录页。
 
 **启动日志出现 `next check-in scheduled` 但时间不对**
-`CHECKIN_TZ` 写错了（必须是 IANA 名称，如 `Asia/Shanghai`），或容器没带 tzdata —— 本项目的镜像已经装了 `tzdata`。
+容器的 `TZ` 不对（检查 `.env` 里的 `TZ` / `compose.yaml`）；`CHECKIN_TIME` 是按这个时区解释的。
 
 **不想用签到**
-留空 `V2EX_COOKIE` / `LIBRA_COOKIE` / `LIBRA_TOKEN`，或设 `CHECKIN_ENABLED=false`。启动卡片会显示 `每日签到: 未启用`。
+清空 `V2EX_COOKIE` 和 `LIBRA_COOKIE` 即可（站点凭据存在就启用）。启动卡片会显示 `每日签到: 未启用`。
