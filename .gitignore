@@ -1,6 +1,6 @@
 .env
 bin/
-/notifier
+/forum-keeper
 state.db
 data/
 *.test

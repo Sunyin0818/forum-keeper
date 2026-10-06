@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
+	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
 // maxCardItems caps how many notifications are rendered in a single card.
@@ -199,7 +199,7 @@ func BuildStartupCard(lines []string, at time.Time) Card {
 		Config: CardConfig{WideScreenMode: true},
 		Header: &CardHeader{
 			Template: "green",
-			Title:    plain("🟢 V2EX 通知服务已启动"),
+			Title:    plain("🟢 forum-keeper 已启动"),
 		},
 	}
 	card.Elements = append(card.Elements, &DivElement{

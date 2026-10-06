@@ -5,7 +5,7 @@
 ## 1. 准备
 
 ```bash
-mkdir -p /opt/v2ex-notifier && cd /opt/v2ex-notifier
+mkdir -p /opt/forum-keeper && cd /opt/forum-keeper
 # 把 deploy/compose.yaml 和 deploy/env.example 拷过来
 
 cp env.example .env
@@ -28,7 +28,7 @@ docker compose logs -f
 
 ```
 INFO authenticated with V2EX              username=...
-INFO v2ex-notifier starting               interval=1m0s first_run=skip state=/data/state.db
+INFO forum-keeper starting               interval=1m0s first_run=skip state=/data/state.db
 INFO startup message sent
 INFO first run: recording existing notifications without pushing  count=N
 ```
@@ -52,7 +52,7 @@ TZ=Asia/Shanghai
 手工触发：
 
 ```bash
-docker compose exec notifier notifier --checkin
+docker compose exec forum-keeper forum-keeper --checkin
 ```
 
 ## 3. 升级
@@ -62,7 +62,7 @@ docker compose exec notifier notifier --checkin
 docker compose pull && docker compose up -d
 ```
 
-状态卷 `notifier-data` 不受影响，不会重推历史提醒。
+状态卷 `data`（compose 项目名固定为 `forum-keeper`，实际卷名 `forum-keeper_data`）不受影响，不会重推历史提醒。
 
 ## 排查
 
@@ -81,5 +81,5 @@ docker compose pull && docker compose up -d
 `compose.yaml` 默认用 GHCR。国内服务器拉 GHCR 可能很慢，两个替代方案：
 
 1. 配 Docker Hub 镜像（仓库 Settings → Secrets 加 `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`，
-   workflow 会自动多推一份），然后改 `image:` 为 `<你的用户名>/v2ex-notifier:0.1.0`
+   workflow 会自动多推一份），然后改 `image:` 为 `<你的用户名>/forum-keeper:0.1.0`
 2. 自建 registry，或用 `docker save` / `docker load` 搬运

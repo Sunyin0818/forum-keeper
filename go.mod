@@ -1,4 +1,4 @@
-module github.com/Sunyin0818/v2ex-notifier
+module github.com/Sunyin0818/forum-keeper
 
 go 1.23
 

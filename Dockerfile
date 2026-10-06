@@ -23,7 +23,7 @@ COPY . .
 # When they are absent, fall back to the build host so a plain
 # `podman build .` keeps working.
 RUN GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
-    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/notifier ./cmd/notifier
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/forum-keeper ./cmd/forum-keeper
 
 
 FROM alpine:3.20
@@ -38,8 +38,8 @@ RUN apk add --no-cache ca-certificates tzdata \
     && mkdir -p /data \
     && chown app:app /data
 
-COPY --from=build /out/notifier /usr/local/bin/notifier
+COPY --from=build /out/forum-keeper /usr/local/bin/forum-keeper
 
 USER app
 VOLUME ["/data"]
-ENTRYPOINT ["/usr/local/bin/notifier"]
+ENTRYPOINT ["/usr/local/bin/forum-keeper"]

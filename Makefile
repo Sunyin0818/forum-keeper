@@ -1,4 +1,4 @@
-BINARY := bin/notifier
+BINARY := bin/forum-keeper
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO ?= go
 
@@ -7,7 +7,7 @@ GO ?= go
 all: test build
 
 build:
-	$(GO) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) ./cmd/notifier
+	$(GO) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) ./cmd/forum-keeper
 
 test:
 	$(GO) test ./...
@@ -25,26 +25,26 @@ clean:
 # The local-env.sh helpers adapts .env (written for the container) so a host
 # run can resolve the proxy address. See the script for details.
 dry-run:
-	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier --once --dry-run
+	. ./scripts/local-env.sh && $(GO) run ./cmd/forum-keeper --once --dry-run
 
 run-once:
-	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier --once
+	. ./scripts/local-env.sh && $(GO) run ./cmd/forum-keeper --once
 
 run:
-	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier
+	. ./scripts/local-env.sh && $(GO) run ./cmd/forum-keeper
 
 # Signs in to every configured site once. The dry-run variant prints only.
 checkin:
-	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier --checkin
+	. ./scripts/local-env.sh && $(GO) run ./cmd/forum-keeper --checkin
 
 checkin-dry-run:
-	. ./scripts/local-env.sh && $(GO) run ./cmd/notifier --checkin --dry-run
+	. ./scripts/local-env.sh && $(GO) run ./cmd/forum-keeper --checkin --dry-run
 
 # --- containers (docker and podman both work) -------------------------------
 
 image:
-	docker build --build-arg VERSION=$(VERSION) -t v2ex-notifier:latest . \
-		|| podman build --build-arg VERSION=$(VERSION) -t v2ex-notifier:latest .
+	docker build --build-arg VERSION=$(VERSION) -t forum-keeper:latest . \
+		|| podman build --build-arg VERSION=$(VERSION) -t forum-keeper:latest .
 
 up:
 	docker compose up -d || podman compose up -d

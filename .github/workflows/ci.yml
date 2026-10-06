@@ -54,7 +54,7 @@ jobs:
         run: |
           go build -trimpath \
             -ldflags="-s -w -X main.version=${GITHUB_SHA::7}" \
-            -o bin/notifier ./cmd/notifier
+            -o bin/forum-keeper ./cmd/forum-keeper
 
   image:
     needs: test
@@ -98,7 +98,7 @@ jobs:
           # ${VAR,,} lowercases: GHCR rejects uppercase repository names.
           list="ghcr.io/${GITHUB_REPOSITORY,,}"
           if [ -n "$DOCKERHUB_USERNAME" ]; then
-            list="${list}"$'\n'"${DOCKERHUB_USERNAME}/v2ex-notifier"
+            list="${list}"$'\n'"${DOCKERHUB_USERNAME}/forum-keeper"
           fi
           {
             echo "list<<__EOF__"

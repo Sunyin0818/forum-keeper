@@ -6,6 +6,6 @@
 *.md
 data/
 state.db
-notifier
+forum-keeper
 bin/
 deploy/

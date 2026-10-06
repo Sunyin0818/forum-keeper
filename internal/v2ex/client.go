@@ -21,7 +21,7 @@ var ErrUnauthorized = errors.New("v2ex: unauthorized (token invalid or expired)"
 
 const (
 	maxAttempts = 3
-	userAgent   = "v2ex-notifier/1.0 (+https://github.com/Sunyin0818/v2ex-notifier)"
+	userAgent   = "forum-keeper/1.0 (+https://github.com/Sunyin0818/forum-keeper)"
 )
 
 // RateLimit mirrors the X-Rate-Limit-* response headers.

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
+	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
 // Realistic `text` values: V2EX sends an HTML fragment here, not a plain phrase.
@@ -289,7 +289,7 @@ func TestBuildStartupCard(t *testing.T) {
 	if card.Header == nil || card.Header.Template != "green" {
 		t.Fatalf("unexpected header: %+v", card.Header)
 	}
-	if card.Header.Title.Content != "🟢 V2EX 通知服务已启动" {
+	if card.Header.Title.Content != "🟢 forum-keeper 已启动" {
 		t.Fatalf("unexpected title %q", card.Header.Title.Content)
 	}
 	if len(card.Elements) != 2 {

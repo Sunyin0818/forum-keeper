@@ -11,12 +11,12 @@ cd "$(dirname "$0")/.."
 . ./scripts/local-env.sh
 
 if command -v go >/dev/null 2>&1; then
-  exec go run ./cmd/notifier --once --dry-run
+  exec go run ./cmd/forum-keeper --once --dry-run
 fi
 
-if [ -x ./bin/notifier ]; then
-  exec ./bin/notifier --once --dry-run
+if [ -x ./bin/forum-keeper ]; then
+  exec ./bin/forum-keeper --once --dry-run
 fi
 
-echo "既找不到 go，也没有 ./bin/notifier。请安装 Go 或先构建二进制。" >&2
+echo "既找不到 go，也没有 ./bin/forum-keeper。请安装 Go 或先构建二进制。" >&2
 exit 1

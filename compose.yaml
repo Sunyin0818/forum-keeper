@@ -1,15 +1,19 @@
+# Compose project name, so the volume is always forum-keeper_data regardless
+# of the checkout directory name.
+name: forum-keeper
+
 services:
-  notifier:
+  forum-keeper:
     build:
       context: .
       args:
         VERSION: ${VERSION:-dev}
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     # Local builds win by default. To run a published image instead, set
-    #   V2EX_NOTIFIER_IMAGE=ghcr.io/sunyin0818/v2ex-notifier:latest
+    #   FORUM_KEEPER_IMAGE=ghcr.io/sunyin0818/forum-keeper:latest
     # and use `compose pull` + `compose up --no-build`.
-    image: ${V2EX_NOTIFIER_IMAGE:-v2ex-notifier:latest}
-    container_name: v2ex-notifier
+    image: ${FORUM_KEEPER_IMAGE:-forum-keeper:latest}
+    container_name: forum-keeper
     restart: unless-stopped
     env_file:
       - .env
@@ -29,11 +33,11 @@ services:
       # environment-specific. Set HTTPS_PROXY in .env for a local Clash proxy,
       # or leave it unset on a cloud VM that reaches v2ex.com directly.
     volumes:
-      - notifier-data:/data
+      - data:/data
     extra_hosts:
       # Lets the container reach a proxy running on the host.
       # Podman users can use host.containers.internal instead.
       - "host.docker.internal:host-gateway"
 
 volumes:
-  notifier-data:
+  data:

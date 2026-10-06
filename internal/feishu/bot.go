@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
+	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
 // TopicResolver fetches a topic by ID. Implemented by the V2EX client.

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Sunyin0818/v2ex-notifier/internal/checkin"
-	"github.com/Sunyin0818/v2ex-notifier/internal/config"
-	"github.com/Sunyin0818/v2ex-notifier/internal/feishu"
-	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
+	"github.com/Sunyin0818/forum-keeper/internal/checkin"
+	"github.com/Sunyin0818/forum-keeper/internal/config"
+	"github.com/Sunyin0818/forum-keeper/internal/feishu"
+	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
 // --- test doubles ----------------------------------------------------------

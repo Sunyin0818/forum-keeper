@@ -24,8 +24,8 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 
-echo "==> building notifier"
-"$GO" build -o "$WORK/notifier" ./cmd/notifier
+echo "==> building forum-keeper"
+"$GO" build -o "$WORK/forum-keeper" ./cmd/forum-keeper
 
 export V2EX_API_BASE_URL="$BASE/api/v2"
 export V2EX_TOKEN="smoke-token"
@@ -38,21 +38,21 @@ export NO_PROXY="127.0.0.1,localhost"
 export no_proxy="127.0.0.1,localhost"
 
 echo "==> run 0: startup message (webhook smoke test)"
-"$WORK/notifier" --notify-startup
+"$WORK/forum-keeper" --notify-startup
 
 echo "==> run 1: first run records existing notifications without pushing"
-"$WORK/notifier" --once
+"$WORK/forum-keeper" --once
 
 echo "==> run 2: pushes the newly arrived notification"
-"$WORK/notifier" --once
+"$WORK/forum-keeper" --once
 
 echo "==> run 3: V2EX_MARK_READ deletes the pushed notification"
-V2EX_MARK_READ=true "$WORK/notifier" --once
+V2EX_MARK_READ=true "$WORK/forum-keeper" --once
 
 echo "==> run 4: daily check-in for both sites"
 V2EX_COOKIE="A2=smoke" V2EX_WEB_BASE_URL="$BASE" \
   LIBRA_COOKIE="access_token=smoke" LIBRA_BASE_URL="$BASE" \
-  "$WORK/notifier" --checkin
+  "$WORK/forum-keeper" --checkin
 
 python3 - "$BASE" <<'PY'
 import json
@@ -72,7 +72,8 @@ startup, first, second, checkin = (blob(h) for h in hooks)
 
 # run 0: startup card
 assert hooks[0]["msg_type"] == "interactive", startup
-assert "服务已启动" in startup, startup
+assert "forum-keeper" in startup, startup
+assert "已启动" in startup, startup
 assert hooks[0]["card"]["header"]["template"] == "green", startup
 
 # run 2: the newly arrived notification

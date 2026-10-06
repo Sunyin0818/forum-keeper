@@ -1,5 +1,5 @@
-// Command notifier polls V2EX notifications and forwards new ones to a Feishu
-// bot webhook.
+// Command forum-keeper polls V2EX notifications and runs the daily check-in for
+// V2EX and 2libra, pushing everything to a Feishu bot webhook.
 package main
 
 import (
@@ -13,9 +13,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Sunyin0818/v2ex-notifier/internal/app"
-	"github.com/Sunyin0818/v2ex-notifier/internal/config"
-	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
+	"github.com/Sunyin0818/forum-keeper/internal/app"
+	"github.com/Sunyin0818/forum-keeper/internal/config"
+	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -32,7 +32,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("v2ex-notifier", version)
+		fmt.Println("forum-keeper", version)
 		return
 	}
 

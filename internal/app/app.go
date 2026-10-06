@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sunyin0818/v2ex-notifier/internal/checkin"
-	"github.com/Sunyin0818/v2ex-notifier/internal/config"
-	"github.com/Sunyin0818/v2ex-notifier/internal/feishu"
-	"github.com/Sunyin0818/v2ex-notifier/internal/store"
-	"github.com/Sunyin0818/v2ex-notifier/internal/v2ex"
+	"github.com/Sunyin0818/forum-keeper/internal/checkin"
+	"github.com/Sunyin0818/forum-keeper/internal/config"
+	"github.com/Sunyin0818/forum-keeper/internal/feishu"
+	"github.com/Sunyin0818/forum-keeper/internal/store"
+	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
 const (
@@ -250,7 +250,7 @@ func (a *App) checkinLoc() *time.Location {
 
 // Run polls until the context is cancelled.
 func (a *App) Run(ctx context.Context) error {
-	a.log.Info("v2ex-notifier starting",
+	a.log.Info("forum-keeper starting",
 		"version", a.version,
 		"interval", a.cfg.PollInterval.String(),
 		"dry_run", a.dryRun,

@@ -1,4 +1,4 @@
-# v2ex-notifier
+# forum-keeper
 
 一个服务做两件事：
 
@@ -55,7 +55,7 @@ docker compose up -d --build
 # Podman
 podman compose up -d --build
 # 或分步：
-podman build -t v2ex-notifier:latest .
+podman build -t forum-keeper:latest .
 podman-compose up -d
 ```
 
@@ -161,7 +161,7 @@ HTTP_ / STATE_ / LOG_ / TZ  通用运维
 - **失败不中断**：一个站点 401 不影响另一个站点签到，卡片里逐条列明。
 - **自动重试**：网络错误 / 429 / 5xx 会重试 3 次（2s、4s）；签到幂等，重试不会重复签。
 - **Cloudflare 识别**：2libra 若返回人机验证页，会明确提示而不是报“签到失败”。
-- **手动触发**：`./bin/notifier --checkin`（`--dry-run` 只打印不发送）。
+- **手动触发**：`./bin/forum-keeper --checkin`（`--dry-run` 只打印不发送）。
 - **重启不重复、停机不漏签**：`CHECKIN_ON_START=true`（默认）下，服务启动时若发现今天还没签（比如 06:00 时容器正好在重启）会立即补签；已签过则跳过。调度到点时也会再查一次，避免一天两张卡片。
 - **不再依赖 GitHub Actions**：签到调度在容器内完成，因此没有「仓库 60 天无活动 → 定时任务被自动停用」这个问题。
 
@@ -169,8 +169,8 @@ HTTP_ / STATE_ / LOG_ / TZ  通用运维
 
 ```bash
 set -a; . ./.env; set +a
-./bin/notifier --checkin            # 真签到 + 推送
-./bin/notifier --checkin --dry-run  # 只打印结果，不推送、不记录
+./bin/forum-keeper --checkin            # 真签到 + 推送
+./bin/forum-keeper --checkin --dry-run  # 只打印结果，不推送、不记录
 ```
 
 ## 验证（不打扰群里任何人）
@@ -181,7 +181,7 @@ set -a; . ./.env; set +a
 
 # 或者不用脚本，直接来：
 set -a; . ./.env; set +a
-./bin/notifier --once --dry-run
+./bin/forum-keeper --once --dry-run
 ```
 
 > `make` 不是必须的，上面的命令等价于 `make dry-run`。如果装了 make，也可以直接
@@ -191,8 +191,8 @@ set -a; . ./.env; set +a
 文件。也可以对已有容器执行：
 podman run --rm --network=host \
   --env-file .env -e STATE_PATH=/data/state.db \
-  -v v2ex-notifier_notifier-data:/data \
-  v2ex-notifier:latest --once --dry-run
+  -v forum-keeper_data:/data \
+  forum-keeper:latest --once --dry-run
 ```
 
 输出示例：
@@ -207,7 +207,7 @@ level=INFO msg="dry-run: would push" id=1234 member=alice text="回复了你的�
 
 ```
 ┌────────────────────────────────────┐
-│ 🟢 V2EX 通知服务已启动              │
+│ 🟢 forum-keeper 已启动              │
 ├────────────────────────────────────┤
 │ 版本: 1338e0f                      │
 │ 账号: @yourname (id 12345)         │
@@ -230,7 +230,7 @@ level=INFO msg="dry-run: would push" id=1234 member=alice text="回复了你的�
 
 ```bash
 set -a; . ./.env; set +a
-./bin/notifier --notify-startup
+./bin/forum-keeper --notify-startup
 ```
 
 这个命令会忽略 `NOTIFY_STARTUP=false` 和冷却时间，适合用来验证 webhook 是否可用。
@@ -342,11 +342,11 @@ Docker 与 Podman 均可解析。云端用不到这行，但也无害。
 ## 不使用容器
 
 ```bash
-go build -o bin/notifier ./cmd/notifier
+go build -o bin/forum-keeper ./cmd/forum-keeper
 set -a; . ./.env; set +a
-./bin/notifier            # 常驻
-./bin/notifier --once     # 单次轮询
-./bin/notifier --checkin  # 立即签到一次
+./bin/forum-keeper            # 常驻
+./bin/forum-keeper --once     # 单次轮询
+./bin/forum-keeper --checkin  # 立即签到一次
 ```
 
 ## 自动构建并发布镜像
@@ -407,8 +407,12 @@ git push origin main --tags
 **默认发到 GHCR，不需要任何配置**（用内置的 `GITHUB_TOKEN`）：
 
 ```
-ghcr.io/sunyin0818/v2ex-notifier:latest
+ghcr.io/sunyin0818/forum-keeper:latest
 ```
+
+> 镜像地址跟随 GitHub 仓库名。CI 用 `github.repository` 自动取值，所以把仓库
+> 改名为 `forum-keeper` 之后就是上面这个路径；不改名则仍是旧路径。`deploy/compose.yaml`
+> 里钉的镜像 tag 也要相应更新。
 
 > 首次推送后，包默认是 private。要在别的机器上拉取，去 GitHub →
 > 你的头像 → Packages → 该 package → Package settings → Change visibility
@@ -427,19 +431,19 @@ Actions 里加两个 secret，workflow 会自动多推一份；没设就跳过�
 ### 跑已发布的镜像
 
 ```bash
-docker run -d --name v2ex-notifier --restart unless-stopped \
+docker run -d --name forum-keeper --restart unless-stopped \
   --env-file .env \
   -e STATE_PATH=/data/state.db \
   -e HTTPS_PROXY=http://host.docker.internal:7897 \
   --add-host host.docker.internal:host-gateway \
-  -v v2ex-notifier-data:/data \
-  ghcr.io/sunyin0818/v2ex-notifier:latest
+  -v forum-keeper_data:/data \
+  ghcr.io/sunyin0818/forum-keeper:latest
 ```
 
 或者仍用 compose，通过环境变量换成远端镜像：
 
 ```bash
-echo 'V2EX_NOTIFIER_IMAGE=ghcr.io/sunyin0818/v2ex-notifier:latest' >> .env
+echo 'FORUM_KEEPER_IMAGE=ghcr.io/sunyin0818/forum-keeper:latest' >> .env
 podman compose pull && podman compose up -d --no-build
 ```
 
@@ -484,9 +488,9 @@ deploy/
 ```
 
 ```bash
-scp -r deploy/ server:/opt/v2ex-notifier/
-ssh server 'cd /opt/v2ex-notifier && cp env.example .env && chmod 600 .env && $EDITOR .env'
-ssh server 'cd /opt/v2ex-notifier && docker compose pull && docker compose up -d'
+scp -r deploy/ server:/opt/forum-keeper/
+ssh server 'cd /opt/forum-keeper && cp env.example .env && chmod 600 .env && $EDITOR .env'
+ssh server 'cd /opt/forum-keeper && docker compose pull && docker compose up -d'
 ```
 
 关键约定（细节见 `deploy/README.md`）：
@@ -512,7 +516,7 @@ ssh server 'cd /opt/v2ex-notifier && docker compose pull && docker compose up -d
 go test ./...     # 等价 make test
 go vet ./...      # 等价 make vet
 gofmt -w .        # 等价 make fmt
-go build -o bin/notifier ./cmd/notifier   # 等价 make build
+go build -o bin/forum-keeper ./cmd/forum-keeper   # 等价 make build
 ```
 
 `scripts/smoke.sh` 会验证：首轮只记录、第二轮推送新提醒、主题标题解析、

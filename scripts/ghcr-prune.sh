@@ -17,7 +17,7 @@
 #   GHCR_TOKEN=$(gh auth token) ./scripts/ghcr-prune.sh
 set -euo pipefail
 
-PKG="${PKG:-sunyin0818/v2ex-notifier}"
+PKG="${PKG:-sunyin0818/forum-keeper}"
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
