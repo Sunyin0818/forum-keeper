@@ -29,80 +29,100 @@ const (
 )
 
 // Config is the fully resolved runtime configuration.
+//
+// Fields are grouped in the same layers as .env.example, most important first:
+//
+//  1. required
+//  2. daily check-in
+//  3. V2EX notifications
+//  4. notification behaviour
+//  5. operations
+//  6. endpoints (advanced)
 type Config struct {
-	// V2EX / source
-	V2EXToken   string
-	V2EXBaseURL string
-	HTTPTimeout time.Duration // per-request timeout
-	MaxPages    int           // how many notification pages to walk per poll
-
-	// Feishu
+	// --- 1. required -------------------------------------------------------
+	V2EXToken     string
 	FeishuWebhook string
 	FeishuSecret  string
 
-	// Polling / state
+	// --- 2. daily check-in -------------------------------------------------
+	// There is no enable switch: a site is enabled precisely when its
+	// credential is set, and disabling it means clearing that line.
+	V2EXCookie      string // A2 (and A2O for 2FA) cookie for the mission page
+	LibraCookie     string // 2libra credential: "access_token=..." cookie or a raw bearer token
+	CheckinHour     int
+	CheckinMinute   int
+	CheckinOnStart  bool
+	CheckinLocation *time.Location // always time.Local; not an env knob
+
+	// --- 3. V2EX notifications ---------------------------------------------
 	PollInterval time.Duration
-	StatePath    string
+	MaxPages     int
 	FirstRun     string
 	MarkRead     bool
 	FilterTypes  []string
-	AlertOnError bool
-	LogLevel     string
 
-	// Startup notification
+	// --- 4. notification behaviour -----------------------------------------
+	AlertOnError           bool
 	StartupMessage         bool
 	StartupMessageCooldown time.Duration
 
-	// Daily check-in. There is no enable switch: a site is enabled precisely
-	// when its credential is set, and disabling it means clearing that line.
-	CheckinOnStart  bool
-	CheckinHour     int
-	CheckinMinute   int
-	CheckinLocation *time.Location // always time.Local; not an env knob
-	V2EXCookie      string         // A2 (and A2O for 2FA) cookie for the mission page
-	V2EXWebBaseURL  string
-	LibraCookie     string // 2libra credential: "access_token=..." cookie or a raw bearer token
-	LibraBaseURL    string
+	// --- 5. operations -----------------------------------------------------
+	HTTPTimeout time.Duration
+	StatePath   string
+	LogLevel    string
+
+	// --- 6. endpoints (advanced; defaults are the public sites) -------------
+	V2EXBaseURL    string // V2EX API 2.0
+	V2EXWebBaseURL string // V2EX web, for the daily mission
+	LibraBaseURL   string // 2libra
 }
 
 // Load reads configuration from the environment and validates it.
 func Load() (*Config, error) {
 	var err error
 	cfg := &Config{
+		// 1. required
 		V2EXToken:     envStr("V2EX_TOKEN", ""),
-		V2EXBaseURL:   strings.TrimRight(envStr("V2EX_BASE_URL", DefaultBaseURL), "/"),
 		FeishuWebhook: envStr("FEISHU_WEBHOOK", ""),
 		FeishuSecret:  envStr("FEISHU_SECRET", ""),
-		StatePath:     envStr("STATE_PATH", "state.db"),
-		FirstRun:      strings.ToLower(envStr("FIRST_RUN", FirstRunSkip)),
-		LogLevel:      strings.ToLower(envStr("LOG_LEVEL", "info")),
-		FilterTypes:   envList("FILTER_TYPES"),
 
-		V2EXCookie:     envStr("V2EX_COOKIE", ""),
+		// 2. daily check-in
+		V2EXCookie:  envStr("V2EX_COOKIE", ""),
+		LibraCookie: envStr("LIBRA_COOKIE", ""),
+
+		// 3. V2EX notifications
+		FirstRun:    strings.ToLower(envStr("V2EX_FIRST_RUN", FirstRunSkip)),
+		FilterTypes: envList("V2EX_FILTER_TYPES"),
+
+		// 5. operations
+		StatePath: envStr("STATE_PATH", "state.db"),
+		LogLevel:  strings.ToLower(envStr("LOG_LEVEL", "info")),
+
+		// 6. endpoints
+		V2EXBaseURL:    strings.TrimRight(envStr("V2EX_API_BASE_URL", DefaultBaseURL), "/"),
 		V2EXWebBaseURL: strings.TrimRight(envStr("V2EX_WEB_BASE_URL", DefaultV2EXWebBaseURL), "/"),
-		LibraCookie:    envStr("LIBRA_COOKIE", ""),
 		LibraBaseURL:   strings.TrimRight(envStr("LIBRA_BASE_URL", DefaultLibraBaseURL), "/"),
 	}
 
 	if cfg.HTTPTimeout, err = envDuration("HTTP_TIMEOUT", 20*time.Second); err != nil {
 		return nil, err
 	}
-	if cfg.PollInterval, err = envDuration("POLL_INTERVAL", 60*time.Second); err != nil {
+	if cfg.PollInterval, err = envDuration("V2EX_POLL_INTERVAL", 60*time.Second); err != nil {
 		return nil, err
 	}
-	if cfg.MaxPages, err = envInt("MAX_PAGES", 3); err != nil {
+	if cfg.MaxPages, err = envInt("V2EX_MAX_PAGES", 3); err != nil {
 		return nil, err
 	}
-	if cfg.MarkRead, err = envBool("MARK_READ", false); err != nil {
+	if cfg.MarkRead, err = envBool("V2EX_MARK_READ", false); err != nil {
 		return nil, err
 	}
-	if cfg.AlertOnError, err = envBool("ALERT_ON_ERROR", true); err != nil {
+	if cfg.AlertOnError, err = envBool("NOTIFY_ALERT_ON_ERROR", true); err != nil {
 		return nil, err
 	}
-	if cfg.StartupMessage, err = envBool("STARTUP_MESSAGE", true); err != nil {
+	if cfg.StartupMessage, err = envBool("NOTIFY_STARTUP", true); err != nil {
 		return nil, err
 	}
-	if cfg.StartupMessageCooldown, err = envDuration("STARTUP_MESSAGE_COOLDOWN", 10*time.Minute); err != nil {
+	if cfg.StartupMessageCooldown, err = envDuration("NOTIFY_STARTUP_COOLDOWN", 10*time.Minute); err != nil {
 		return nil, err
 	}
 	if cfg.CheckinOnStart, err = envBool("CHECKIN_ON_START", true); err != nil {
@@ -129,23 +149,23 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: FEISHU_WEBHOOK is required")
 	}
 	if c.V2EXBaseURL == "" {
-		return fmt.Errorf("config: V2EX_BASE_URL must not be empty")
+		return fmt.Errorf("config: V2EX_API_BASE_URL must not be empty")
 	}
 	switch c.FirstRun {
 	case FirstRunSkip, FirstRunPush:
 	default:
-		return fmt.Errorf("config: FIRST_RUN must be %q or %q, got %q", FirstRunSkip, FirstRunPush, c.FirstRun)
+		return fmt.Errorf("config: V2EX_FIRST_RUN must be %q or %q, got %q", FirstRunSkip, FirstRunPush, c.FirstRun)
 	}
 	// 600 requests/hour/IP means a poll faster than every 6s would blow the
 	// budget. Refuse anything under 5s rather than letting the user self-DoS.
 	if c.PollInterval < 5*time.Second {
-		return fmt.Errorf("config: POLL_INTERVAL must be >= 5s, got %s", c.PollInterval)
+		return fmt.Errorf("config: V2EX_POLL_INTERVAL must be >= 5s, got %s", c.PollInterval)
 	}
 	if c.MaxPages < 1 {
-		return fmt.Errorf("config: MAX_PAGES must be >= 1, got %d", c.MaxPages)
+		return fmt.Errorf("config: V2EX_MAX_PAGES must be >= 1, got %d", c.MaxPages)
 	}
 	if c.StartupMessageCooldown < 0 {
-		return fmt.Errorf("config: STARTUP_MESSAGE_COOLDOWN must not be negative, got %s", c.StartupMessageCooldown)
+		return fmt.Errorf("config: NOTIFY_STARTUP_COOLDOWN must not be negative, got %s", c.StartupMessageCooldown)
 	}
 	if c.StatePath == "" {
 		return fmt.Errorf("config: STATE_PATH must not be empty")
@@ -154,7 +174,7 @@ func (c *Config) validate() error {
 		switch f {
 		case "reply", "mention", "thanks", "other":
 		default:
-			return fmt.Errorf("config: FILTER_TYPES contains unknown type %q (allowed: reply, mention, thanks, other)", f)
+			return fmt.Errorf("config: V2EX_FILTER_TYPES contains unknown type %q (allowed: reply, mention, thanks, other)", f)
 		}
 	}
 	return nil

@@ -65,28 +65,69 @@ docker compose logs -f      # 或 podman compose logs -f
 
 ## 配置项
 
+命名规则：同一子系统的变量共用前缀，分层排列，最需要改的在最前面。
+
+```
+V2EX_*    V2EX API 与每日签到
+LIBRA_*   2libra
+FEISHU_*  飞书机器人
+CHECKIN_* 签到调度
+NOTIFY_*  通知行为
+HTTP_ / STATE_ / LOG_ / TZ  通用运维
+```
+
+### 1. 必填
+
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `V2EX_TOKEN` | — | **必填**，Personal Access Token |
 | `FEISHU_WEBHOOK` | — | **必填**，飞书机器人 webhook |
 | `FEISHU_SECRET` | 空 | 开启了签名校验时必填 |
-| `POLL_INTERVAL` | `60s` | 轮询间隔，最小 `5s` |
-| `HTTPS_PROXY` | 空 | 仅 v2ex.com 走此代理；飞书始终直连（标准变量） |
-| `FIRST_RUN` | `skip` | `skip` 首轮只记录不推送；`push` 全推 |
-| `MARK_READ` | `false` | 推送成功后调用 `DELETE /notifications/:id` |
-| `FILTER_TYPES` | 空 | 只推指定类型：`reply,mention,thanks,other` |
-| `ALERT_ON_ERROR` | `true` | 连续失败达到阈值时发飞书告警 |
-| `STARTUP_MESSAGE` | `true` | 启动时发送「服务已启动」卡片 |
-| `STARTUP_MESSAGE_COOLDOWN` | `10m` | 两条启动消息的最小间隔；重启循环不会刷屏，设 `0` 则每次都发 |
-| `MAX_PAGES` | `3` | 每轮最多翻几页（每页 20 条） |
+
+### 2. 每日签到（V2EX + 2libra）
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `V2EX_COOKIE` | 空 | V2EX 会话 Cookie（`A2=...`，2FA 还需 `A2O`）。填了才启用 V2EX 签到 |
+| `LIBRA_COOKIE` | 空 | 2libra 凭据：`access_token=...`，或裸 token（无 `=`/`;` 时按 Bearer 发送）。填了才启用 2libra 签到 |
+| `CHECKIN_TIME` | `06:00` | 每日签到时间（`HH:MM`，按 `TZ`） |
+| `CHECKIN_ON_START` | `true` | 启动补签：今天还没签就直接签；同一天重启跳过。设为 `false` 则只等 `CHECKIN_TIME` |
+| `TZ` | `Asia/Shanghai` | 时区；调度时间与卡片/日志时间戳都用它 |
+
+### 3. V2EX 提醒
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `V2EX_POLL_INTERVAL` | `60s` | 轮询间隔，最小 `5s` |
+| `V2EX_FIRST_RUN` | `skip` | `skip` 首轮只记录不推送；`push` 全推 |
+| `V2EX_MARK_READ` | `false` | 推送成功后调用 `DELETE /notifications/:id` |
+| `V2EX_FILTER_TYPES` | 空 | 只推指定类型：`reply,mention,thanks,other` |
+| `V2EX_MAX_PAGES` | `3` | 每轮最多翻几页（每页 20 条） |
+
+### 4. 通知行为
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `NOTIFY_STARTUP` | `true` | 启动时发送「服务已启动」卡片 |
+| `NOTIFY_STARTUP_COOLDOWN` | `10m` | 两条启动消息的最小间隔；重启循环不会刷屏，设 `0` 则每次都发 |
+| `NOTIFY_ALERT_ON_ERROR` | `true` | 连续失败达到阈值时发飞书告警 |
+
+### 5. 运维
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
 | `HTTP_TIMEOUT` | `20s` | 单次请求超时 |
 | `STATE_PATH` | `state.db` | 状态文件路径；容器内由 compose 覆盖为 `/data/state.db` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `CHECKIN_TIME` | `06:00` | 每日签到时间（`HH:MM`，按容器 `TZ`） |
-| `CHECKIN_ON_START` | `true` | 启动补签：今天还没签就直接签；同一天重启跳过。设为 `false` 则只等 `CHECKIN_TIME` |
-| `TZ` | `Asia/Shanghai` | 时区；调度时间与卡片/日志时间戳都用它 |
-| `V2EX_COOKIE` | 空 | V2EX 会话 Cookie（`A2=...`，2FA 还需 `A2O`）。填了才启用 V2EX 签到 |
-| `LIBRA_COOKIE` | 空 | 2libra 凭据：`access_token=...`，或直接填裸 token（无 `=` 时按 Bearer 发送）。填了才启用 2libra 签到 |
+| `HTTPS_PROXY` | 空 | 仅 V2EX 与签到请求走此代理；飞书始终直连（标准变量） |
+
+### 6. 端点（高级，默认指向公网站点）
+
+| 变量 | 默认值 |
+|---|---|
+| `V2EX_API_BASE_URL` | `https://www.v2ex.com/api/v2` |
+| `V2EX_WEB_BASE_URL` | `https://www.v2ex.com` |
+| `LIBRA_BASE_URL` | `https://2libra.com` |
 
 ### 每日签到
 
@@ -194,7 +235,7 @@ set -a; . ./.env; set +a
 ./bin/notifier --notify-startup
 ```
 
-这个命令会忽略 `STARTUP_MESSAGE=false` 和冷却时间，适合用来验证 webhook 是否可用。
+这个命令会忽略 `NOTIFY_STARTUP=false` 和冷却时间，适合用来验证 webhook 是否可用。
 
 **防刷屏**：容器常常配 `restart: unless-stopped`，如果启动后很快崩掉重启，
 默认 `10m` 的冷却时间会抑制重复消息（日志会记录 `startup message skipped (cooldown)`）。
@@ -236,8 +277,8 @@ set -a; . ./.env; set +a
 ## 工作原理
 
 ```
-每 POLL_INTERVAL 触发一次
-   └─ GET /api/v2/notifications?p=1..MAX_PAGES     （按时间倒序）
+每 V2EX_POLL_INTERVAL 触发一次
+   └─ GET /api/v2/notifications?p=1..V2EX_MAX_PAGES     （按时间倒序）
         └─ 与本地已见 id 求差集
              ├─ 无新消息 → 结束（info 级别不打日志，见 FAQ）
              └─ 有新消息 → 组卡片 → POST 飞书 webhook
@@ -458,7 +499,7 @@ ssh server 'cd /opt/v2ex-notifier && docker compose pull && docker compose up -d
 | **不设 `HTTPS_PROXY`** | 云端直连 v2ex.com。填了本地地址会静默连不上。 |
 | **`/data` 必须是持久卷** | 丢了会重置去重基准。 |
 | **`TZ` 显式设置** | Podman 挂载宿主机 `/etc/localtime`，Docker 不挂，不设就是 UTC。 |
-| **首次部署不刷屏** | `FIRST_RUN=skip` 只记录不推送，只出一张 🟢 启动卡片。 |
+| **首次部署不刷屏** | `V2EX_FIRST_RUN=skip` 只记录不推送，只出一张 🟢 启动卡片。 |
 
 ## 开发
 
@@ -477,7 +518,7 @@ go build -o bin/notifier ./cmd/notifier   # 等价 make build
 ```
 
 `scripts/smoke.sh` 会验证：首轮只记录、第二轮推送新提醒、主题标题解析、
-`MARK_READ` 删除提醒。它需要 `go`、`python3`、`curl`。
+`V2EX_MARK_READ` 删除提醒。它需要 `go`、`python3`、`curl`。
 
 ## 常见问题
 
@@ -492,7 +533,7 @@ V2EX 不可达。检查 `HTTPS_PROXY` 是否指向可用的代理、地址是否
 （不是 `127.0.0.1`），以及代理节点本身是否正常。
 
 **一直没有推送**
-确认 `FIRST_RUN` 的行为：首次启动默认只记录不推送。看 `LOG_LEVEL=debug` 的日志确认是否真的没有新提醒。
+确认 `V2EX_FIRST_RUN` 的行为：首次启动默认只记录不推送。看 `LOG_LEVEL=debug` 的日志确认是否真的没有新提醒。
 
 **运行中长时间没有任何日志，服务是不是挂了？**
 这是正常的。无新提醒时 info 级别不打日志（只在 debug 下输出

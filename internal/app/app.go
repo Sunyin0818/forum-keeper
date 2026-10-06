@@ -156,8 +156,8 @@ func (a *App) CheckToken(ctx context.Context) error {
 
 // NotifyStartup sends the "service started" card.
 //
-// With force=false it honours STARTUP_MESSAGE and skips the message when one
-// was sent within STARTUP_MESSAGE_COOLDOWN (so a restart loop cannot spam the
+// With force=false it honours NOTIFY_STARTUP and skips the message when one
+// was sent within NOTIFY_STARTUP_COOLDOWN (so a restart loop cannot spam the
 // group). force=true is used by the --notify-startup flag and bypasses both.
 func (a *App) NotifyStartup(ctx context.Context, force bool) error {
 	if !force {

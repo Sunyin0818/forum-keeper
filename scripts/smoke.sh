@@ -27,11 +27,11 @@ done
 echo "==> building notifier"
 "$GO" build -o "$WORK/notifier" ./cmd/notifier
 
-export V2EX_BASE_URL="$BASE/api/v2"
+export V2EX_API_BASE_URL="$BASE/api/v2"
 export V2EX_TOKEN="smoke-token"
 export FEISHU_WEBHOOK="$BASE/hook"
 export STATE_PATH="$WORK/state.db"
-export FIRST_RUN=skip
+export V2EX_FIRST_RUN=skip
 export LOG_LEVEL=warn
 # Keep the mock traffic off any system-wide proxy (CI runners often have one set).
 export NO_PROXY="127.0.0.1,localhost"
@@ -46,8 +46,8 @@ echo "==> run 1: first run records existing notifications without pushing"
 echo "==> run 2: pushes the newly arrived notification"
 "$WORK/notifier" --once
 
-echo "==> run 3: MARK_READ deletes the pushed notification"
-MARK_READ=true "$WORK/notifier" --once
+echo "==> run 3: V2EX_MARK_READ deletes the pushed notification"
+V2EX_MARK_READ=true "$WORK/notifier" --once
 
 echo "==> run 4: daily check-in for both sites"
 V2EX_COOKIE="A2=smoke" V2EX_WEB_BASE_URL="$BASE" \
@@ -81,7 +81,7 @@ assert "感谢" in first, first
 assert "关于 xxx 的讨论" in first, first
 assert "https://www.v2ex.com/t/555" in first, first
 
-# run 3: MARK_READ deletes it
+# run 3: V2EX_MARK_READ deletes it
 assert "dave" in second, second
 assert deleted == [4], "expected [4] deleted, got %s" % deleted
 

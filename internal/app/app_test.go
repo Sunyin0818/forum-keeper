@@ -485,7 +485,7 @@ func TestNotifyStartupDisabled(t *testing.T) {
 		t.Fatalf("NotifyStartup: %v", err)
 	}
 	if len(n.startups) != 0 {
-		t.Fatalf("STARTUP_MESSAGE=false must not send, got %d", len(n.startups))
+		t.Fatalf("NOTIFY_STARTUP=false must not send, got %d", len(n.startups))
 	}
 }
 

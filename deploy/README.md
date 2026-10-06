@@ -33,7 +33,7 @@ INFO startup message sent
 INFO first run: recording existing notifications without pushing  count=N
 ```
 
-群里会先收到一张 🟢 启动卡片。**不会刷屏** —— `FIRST_RUN=skip` 会把当前未读提醒
+群里会先收到一张 🟢 启动卡片。**不会刷屏** —— `V2EX_FIRST_RUN=skip` 会把当前未读提醒
 全部标记为已见但不推送，之后只推真正的新提醒。
 
 ## 2b. 每日签到（可选）

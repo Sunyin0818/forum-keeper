@@ -123,7 +123,7 @@ func (c *Client) Member(ctx context.Context) (*Member, error) {
 	return &resp.Result, nil
 }
 
-// DeleteNotification removes a notification. Used when MARK_READ is enabled.
+// DeleteNotification removes a notification. Used when V2EX_MARK_READ is enabled.
 func (c *Client) DeleteNotification(ctx context.Context, id int) error {
 	return c.do(ctx, http.MethodDelete, fmt.Sprintf("%s/notifications/%d", c.base, id), nil, nil)
 }

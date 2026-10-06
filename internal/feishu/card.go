@@ -13,7 +13,7 @@ import (
 // maxCardItems caps how many notifications are rendered in a single card.
 const maxCardItems = 10
 
-// Notification kinds, also used by FILTER_TYPES.
+// Notification kinds, also used by V2EX_FILTER_TYPES.
 const (
 	KindReply   = "reply"
 	KindMention = "mention"
