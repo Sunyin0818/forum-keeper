@@ -218,14 +218,26 @@ ssh server 'cd /opt/forum-keeper && docker compose pull && docker compose up -d'
 
 细节与排查见 `deploy/README.md`。云端**不要**用仓库根目录的 `compose.yaml`（那是给本地开发用的）。
 
-镜像发布在 GHCR，push `v*` tag 触发 CI：
+镜像发布在 GHCR，push `v*` tag 会依次：跑测试 → 构建并推送镜像 → **创建 GitHub Release**（自动生成 release notes）：
 
 ```bash
 git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
 # -> ghcr.io/sunyin0818/forum-keeper:0.2.0 / :0.2 / :latest（amd64 + arm64）
+# -> https://github.com/Sunyin0818/forum-keeper/releases/tag/v0.2.0
 ```
 
 包默认 private，要跨机器拉取就在 GitHub → Packages 里改为 public，或 `docker login ghcr.io`。
+
+> **改名后的旧包残留**：GHCR 包名不会随仓库改名而变化，旧的
+> `ghcr.io/sunyin0818/v2ex-notifier` 仍然存在。删除整个包需要带
+> `delete:packages` 权限的 PAT，GITHUB_TOKEN 不行：
+>
+> ```bash
+> GHCR_TOKEN=<pat> ./scripts/ghcr-delete-package.sh v2ex-notifier          # 预演
+> GHCR_TOKEN=<pat> ./scripts/ghcr-delete-package.sh v2ex-notifier --apply  # 删除
+> ```
+>
+> 或直接在网页删除：<https://github.com/users/Sunyin0818/packages/container/v2ex-notifier/settings>
 
 ## 开发
 

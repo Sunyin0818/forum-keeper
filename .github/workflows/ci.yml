@@ -166,3 +166,28 @@ jobs:
             echo "Platforms: \`linux/amd64, linux/arm64\`"
             echo "Version baked in: \`${{ github.ref_name }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    # A tag is just a pointer; the Release is the human-facing record with notes
+    # and the image reference. Create it only after the image is actually up, so
+    # the release never points at something that failed to build.
+    needs: [test, image]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to create the release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Notes are generated from merged PRs / commits since the last tag.
+          generate_release_notes: true
+          # Tags like v0.2.0-rc1 get marked as pre-releases.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            容器镜像：`ghcr.io/${{ github.repository }}:${{ github.ref_name }}`
+            （linux/amd64 + linux/arm64，含 provenance 与 SBOM）
