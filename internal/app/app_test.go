@@ -25,6 +25,7 @@ func nopLogger() *slog.Logger {
 
 func baseConfig() *config.Config {
 	return &config.Config{
+		V2EXToken:              "test-token",
 		V2EXBaseURL:            "https://example.invalid/api/v2",
 		FirstRun:               config.FirstRunSkip,
 		MaxPages:               3,
@@ -656,6 +657,24 @@ func TestCheckinOnStartDisabled(t *testing.T) {
 	a.maybeCheckinOnStart(context.Background())
 	if s.calls != 0 {
 		t.Fatalf("CHECKIN_ON_START=false must not run, calls=%d", s.calls)
+	}
+}
+
+func TestRemindersDisabledStartupLines(t *testing.T) {
+	cfg := baseConfig()
+	cfg.V2EXToken = ""
+
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, newFakeState(), &fakeNotifier{})
+	if a.RemindersEnabled() {
+		t.Fatal("RemindersEnabled should be false without V2EX_TOKEN")
+	}
+
+	lines := strings.Join(a.startupLines(), "\n")
+	if !strings.Contains(lines, "提醒: 未启用") {
+		t.Fatalf("startup lines should say reminders are off:\n%s", lines)
+	}
+	if strings.Contains(lines, "轮询间隔") {
+		t.Fatalf("reminder tuning should be hidden when disabled:\n%s", lines)
 	}
 }
 

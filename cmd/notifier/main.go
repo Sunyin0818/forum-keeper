@@ -60,13 +60,17 @@ func main() {
 	}()
 	service.SetVersion(version)
 
-	// Fail fast on an invalid token; tolerate transient API outages.
-	if err := service.CheckToken(ctx); err != nil {
-		if errors.Is(err, v2ex.ErrUnauthorized) {
-			logger.Error("V2EX rejected the token; rotate V2EX_TOKEN", "err", err)
-			os.Exit(1)
+	// Fail fast on an invalid token; tolerate transient API outages. Skipped
+	// when reminders are off (no V2EX_TOKEN), so a check-in-only deployment
+	// does not fail on a credential it does not use.
+	if service.RemindersEnabled() {
+		if err := service.CheckToken(ctx); err != nil {
+			if errors.Is(err, v2ex.ErrUnauthorized) {
+				logger.Error("V2EX rejected the token; rotate V2EX_TOKEN", "err", err)
+				os.Exit(1)
+			}
+			logger.Warn("could not verify token at startup, continuing", "err", err)
 		}
-		logger.Warn("could not verify token at startup, continuing", "err", err)
 	}
 
 	if *notifyStartup {
@@ -78,6 +82,10 @@ func main() {
 	}
 
 	if *once {
+		if !service.RemindersEnabled() {
+			logger.Info("V2EX_TOKEN is empty; nothing to poll")
+			return
+		}
 		if _, err := service.PollOnce(ctx); err != nil {
 			logger.Error("poll failed", "err", err)
 			os.Exit(1)

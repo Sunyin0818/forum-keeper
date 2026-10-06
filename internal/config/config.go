@@ -142,8 +142,11 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if c.V2EXToken == "" {
-		return fmt.Errorf("config: V2EX_TOKEN is required")
+	// V2EX_TOKEN is optional: without it the service only runs the daily
+	// check-in. But something has to be configured, or the container would sit
+	// there doing nothing.
+	if c.V2EXToken == "" && c.V2EXCookie == "" && c.LibraCookie == "" {
+		return fmt.Errorf("config: nothing to do: set V2EX_TOKEN (reminders) and/or V2EX_COOKIE or LIBRA_COOKIE (check-in)")
 	}
 	if c.FeishuWebhook == "" {
 		return fmt.Errorf("config: FEISHU_WEBHOOK is required")

@@ -10,7 +10,7 @@ mkdir -p /opt/v2ex-notifier && cd /opt/v2ex-notifier
 
 cp env.example .env
 chmod 600 .env
-$EDITOR .env        # 填 V2EX_TOKEN 和 FEISHU_WEBHOOK
+$EDITOR .env        # 填 FEISHU_WEBHOOK；V2EX_TOKEN 留空则只签到
 ```
 
 `.env` 里**不要**写 `HTTPS_PROXY` —— 云端直连 v2ex.com。

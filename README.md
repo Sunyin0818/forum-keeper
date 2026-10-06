@@ -13,12 +13,14 @@
 
 ## 快速开始
 
-### 1. 获取 V2EX Personal Access Token
+### 1. 获取 V2EX Personal Access Token（只想签到可跳过）
 
 打开 <https://www.v2ex.com/settings/tokens> 创建令牌，复制形如
 `00000000-1111-2222-3333-444444444444` 的占位值，替换掉 `.env` 里的 `V2EX_TOKEN`。
 
 > 令牌有有效期（30/60/90/180/360 天）。建议单独建一个只用于本服务的令牌，到期轮换时只改 `V2EX_TOKEN`。
+>
+> `V2EX_TOKEN` **可以留空**：留空就只跑每日签到、不轮询 V2EX 提醒。
 
 ### 2. 创建飞书自定义机器人
 
@@ -43,7 +45,7 @@ https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx
 
 ```bash
 ./scripts/init-env.sh   # 从 .env.example 生成 .env（已存在则拒绝覆盖）
-$EDITOR .env            # 至少填 V2EX_TOKEN 和 FEISHU_WEBHOOK
+$EDITOR .env            # 至少填 FEISHU_WEBHOOK；V2EX_TOKEN 留空则只签到
 ```
 
 ```bash
@@ -76,19 +78,24 @@ NOTIFY_*  通知行为
 HTTP_ / STATE_ / LOG_ / TZ  通用运维
 ```
 
-### 1. 必填
+### 1. 基础
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `V2EX_TOKEN` | — | **必填**，Personal Access Token |
+| `V2EX_TOKEN` | 空 | 只用于 **V2EX 提醒**（API 2.0）。**可留空**——留空就只跑签到，不轮询提醒 |
 | `FEISHU_WEBHOOK` | — | **必填**，飞书机器人 webhook |
 | `FEISHU_SECRET` | 空 | 开启了签名校验时必填 |
+
+> **为什么 V2EX 有 Token 和 Cookie 两个？** 因为 V2EX 自己有两套互不相通的认证：
+> API 2.0（`/api/v2/*`）认 `V2EX_TOKEN`，网页（`/mission/daily`）认会话 Cookie。
+> Token 拿到签到页会被 302 到 `/signin`，所以签到必须用 Cookie；两件事都做就两个都填。
+> 而 2libra 只有一套凭据（`access_token`）， Cookie 或 Bearer 只是同一个值的两种传法。
 
 ### 2. 每日签到（V2EX + 2libra）
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `V2EX_COOKIE` | 空 | V2EX 会话 Cookie（`A2=...`，2FA 还需 `A2O`）。填了才启用 V2EX 签到 |
+| `V2EX_COOKIE` | 空 | V2EX 网页会话 Cookie（`A2=...`，2FA 还需 `A2O`），**签到**用。填了才启用 V2EX 签到 |
 | `LIBRA_COOKIE` | 空 | 2libra 凭据：`access_token=...`，或裸 token（无 `=`/`;` 时按 Bearer 发送）。填了才启用 2libra 签到 |
 | `CHECKIN_TIME` | `06:00` | 每日签到时间（`HH:MM`，按 `TZ`） |
 | `CHECKIN_ON_START` | `true` | 启动补签：今天还没签就直接签；同一天重启跳过。设为 `false` 则只等 `CHECKIN_TIME` |

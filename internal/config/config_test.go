@@ -53,6 +53,30 @@ func TestLoadCheckinOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsCheckinOnly(t *testing.T) {
+	t.Setenv("FEISHU_WEBHOOK", "https://example.invalid/hook")
+	t.Setenv("V2EX_COOKIE", "A2=x")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.V2EXToken != "" {
+		t.Errorf("V2EX_TOKEN should be empty, got %q", cfg.V2EXToken)
+	}
+	if cfg.V2EXCookie != "A2=x" {
+		t.Errorf("V2EX_COOKIE = %q", cfg.V2EXCookie)
+	}
+}
+
+func TestLoadRejectsNothingToDo(t *testing.T) {
+	t.Setenv("FEISHU_WEBHOOK", "https://example.invalid/hook")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "nothing to do") {
+		t.Fatalf("expected a nothing-to-do error, got %v", err)
+	}
+}
+
 func TestLoadRejectsInvalidCheckinTime(t *testing.T) {
 	t.Setenv("V2EX_TOKEN", "token")
 	t.Setenv("FEISHU_WEBHOOK", "https://example.invalid/hook")

@@ -154,6 +154,10 @@ func (a *App) CheckToken(ctx context.Context) error {
 	return nil
 }
 
+// RemindersEnabled reports whether V2EX notification polling is configured.
+// V2EX_TOKEN is optional: without it the service runs the daily check-in only.
+func (a *App) RemindersEnabled() bool { return a.cfg.V2EXToken != "" }
+
 // NotifyStartup sends the "service started" card.
 //
 // With force=false it honours NOTIFY_STARTUP and skips the message when one
@@ -199,12 +203,19 @@ func (a *App) startupLines() []string {
 	if a.member != nil {
 		lines = append(lines, fmt.Sprintf("账号: @%s (id %d)", a.member.Username, a.member.ID))
 	}
+	lines = append(lines, "每日签到: "+a.checkinLabel())
+	if a.RemindersEnabled() {
+		lines = append(lines,
+			"提醒: V2EX",
+			"轮询间隔: "+a.cfg.PollInterval.String(),
+			"首轮策略: "+a.cfg.FirstRun,
+			"标记已读: "+yesNo(a.cfg.MarkRead),
+			"类型过滤: "+filterLabel(a.cfg.FilterTypes),
+		)
+	} else {
+		lines = append(lines, "提醒: 未启用（未设置 V2EX_TOKEN）")
+	}
 	lines = append(lines,
-		"轮询间隔: "+a.cfg.PollInterval.String(),
-		"首轮策略: "+a.cfg.FirstRun,
-		"标记已读: "+yesNo(a.cfg.MarkRead),
-		"类型过滤: "+filterLabel(a.cfg.FilterTypes),
-		"每日签到: "+a.checkinLabel(),
 		"V2EX 代理: "+proxyLabel(),
 		"状态文件: "+a.cfg.StatePath,
 	)
@@ -256,6 +267,14 @@ func (a *App) Run(ctx context.Context) error {
 		a.maybeCheckinOnStart(ctx)
 		go a.checkinLoop(ctx)
 	}
+
+	if !a.RemindersEnabled() {
+		a.log.Info("V2EX reminders disabled (V2EX_TOKEN is empty); running check-in only")
+		<-ctx.Done()
+		a.log.Info("shutting down")
+		return ctx.Err()
+	}
+
 	a.pollAndLog(ctx)
 
 	ticker := time.NewTicker(a.cfg.PollInterval)
@@ -545,6 +564,9 @@ func (a *App) passFilter(it v2ex.Notification) bool {
 }
 
 func (a *App) pollAndLog(ctx context.Context) {
+	if !a.RemindersEnabled() {
+		return
+	}
 	_, err := a.PollOnce(ctx)
 	if err != nil {
 		a.failures++
