@@ -78,20 +78,7 @@ NOTIFY_*  通知行为
 HTTP_ / STATE_ / LOG_ / TZ  通用运维
 ```
 
-### 1. 基础
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `V2EX_TOKEN` | 空 | 只用于 **V2EX 提醒**（API 2.0）。**可留空**——留空就只跑签到，不轮询提醒 |
-| `FEISHU_WEBHOOK` | — | **必填**，飞书机器人 webhook |
-| `FEISHU_SECRET` | 空 | 开启了签名校验时必填 |
-
-> **为什么 V2EX 有 Token 和 Cookie 两个？** 因为 V2EX 自己有两套互不相通的认证：
-> API 2.0（`/api/v2/*`）认 `V2EX_TOKEN`，网页（`/mission/daily`）认会话 Cookie。
-> Token 拿到签到页会被 302 到 `/signin`，所以签到必须用 Cookie；两件事都做就两个都填。
-> 而 2libra 只有一套凭据（`access_token`）， Cookie 或 Bearer 只是同一个值的两种传法。
-
-### 2. 每日签到（V2EX + 2libra）
+### 1. 每日签到（V2EX + 2libra）★ 核心
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -101,10 +88,23 @@ HTTP_ / STATE_ / LOG_ / TZ  通用运维
 | `CHECKIN_ON_START` | `true` | 启动补签：今天还没签就直接签；同一天重启跳过。设为 `false` 则只等 `CHECKIN_TIME` |
 | `TZ` | `Asia/Shanghai` | 时区；调度时间与卡片/日志时间戳都用它 |
 
-### 3. V2EX 提醒
+### 2. 推送（必填）
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
+| `FEISHU_WEBHOOK` | — | **必填**，飞书机器人 webhook；提醒与签到卡片都走它 |
+| `FEISHU_SECRET` | 空 | 开启了签名校验时必填 |
+
+> **为什么 V2EX 有 Token 和 Cookie 两个？** 因为 V2EX 自己有两套互不相通的认证：
+> API 2.0（`/api/v2/*`）认 `V2EX_TOKEN`，网页（`/mission/daily`）认会话 Cookie。
+> Token 拿到签到页会被 302 到 `/signin`，所以签到必须用 Cookie；两件事都做就两个都填。
+> 而 2libra 只有一套凭据（`access_token`），Cookie 或 Bearer 只是同一个值的两种传法。
+
+### 3. V2EX 提醒（可选，只签到可整段跳过）
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `V2EX_TOKEN` | 空 | 只用于提醒（API 2.0）。**可留空**——留空就只跑签到，不轮询提醒 |
 | `V2EX_POLL_INTERVAL` | `60s` | 轮询间隔，最小 `5s` |
 | `V2EX_FIRST_RUN` | `skip` | `skip` 首轮只记录不推送；`push` 全推 |
 | `V2EX_MARK_READ` | `false` | 推送成功后调用 `DELETE /notifications/:id` |

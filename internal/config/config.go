@@ -32,19 +32,14 @@ const (
 //
 // Fields are grouped in the same layers as .env.example, most important first:
 //
-//  1. required
-//  2. daily check-in
-//  3. V2EX notifications
+//  1. daily check-in (core)
+//  2. push (Feishu)
+//  3. V2EX reminders (optional)
 //  4. notification behaviour
 //  5. operations
 //  6. endpoints (advanced)
 type Config struct {
-	// --- 1. required -------------------------------------------------------
-	V2EXToken     string
-	FeishuWebhook string
-	FeishuSecret  string
-
-	// --- 2. daily check-in -------------------------------------------------
+	// --- 1. daily check-in (core) ------------------------------------------
 	// There is no enable switch: a site is enabled precisely when its
 	// credential is set, and disabling it means clearing that line.
 	V2EXCookie      string // A2 (and A2O for 2FA) cookie for the mission page
@@ -54,7 +49,12 @@ type Config struct {
 	CheckinOnStart  bool
 	CheckinLocation *time.Location // always time.Local; not an env knob
 
-	// --- 3. V2EX notifications ---------------------------------------------
+	// --- 2. push (Feishu) --------------------------------------------------
+	FeishuWebhook string
+	FeishuSecret  string
+
+	// --- 3. V2EX reminders (optional; empty token = check-in only) ---------
+	V2EXToken    string
 	PollInterval time.Duration
 	MaxPages     int
 	FirstRun     string
@@ -81,16 +81,16 @@ type Config struct {
 func Load() (*Config, error) {
 	var err error
 	cfg := &Config{
-		// 1. required
-		V2EXToken:     envStr("V2EX_TOKEN", ""),
-		FeishuWebhook: envStr("FEISHU_WEBHOOK", ""),
-		FeishuSecret:  envStr("FEISHU_SECRET", ""),
-
-		// 2. daily check-in
+		// 1. daily check-in (core)
 		V2EXCookie:  envStr("V2EX_COOKIE", ""),
 		LibraCookie: envStr("LIBRA_COOKIE", ""),
 
-		// 3. V2EX notifications
+		// 2. push
+		FeishuWebhook: envStr("FEISHU_WEBHOOK", ""),
+		FeishuSecret:  envStr("FEISHU_SECRET", ""),
+
+		// 3. V2EX reminders (optional)
+		V2EXToken:   envStr("V2EX_TOKEN", ""),
 		FirstRun:    strings.ToLower(envStr("V2EX_FIRST_RUN", FirstRunSkip)),
 		FilterTypes: envList("V2EX_FILTER_TYPES"),
 
