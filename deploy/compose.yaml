@@ -14,7 +14,7 @@ services:
   forum-keeper:
     # Pin a version so a restart cannot silently change the running code.
     # Upgrade by editing this line, then `docker compose pull && up -d`.
-    image: ghcr.io/sunyin0818/forum-keeper:0.1.0
+    image: ghcr.io/sunyin0818/forum-keeper:0.2.0
     container_name: forum-keeper
     restart: unless-stopped
     env_file: .env

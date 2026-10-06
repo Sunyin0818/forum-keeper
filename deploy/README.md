@@ -81,5 +81,5 @@ docker compose pull && docker compose up -d
 `compose.yaml` 默认用 GHCR。国内服务器拉 GHCR 可能很慢，两个替代方案：
 
 1. 配 Docker Hub 镜像（仓库 Settings → Secrets 加 `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`，
-   workflow 会自动多推一份），然后改 `image:` 为 `<你的用户名>/forum-keeper:0.1.0`
+   workflow 会自动多推一份），然后改 `image:` 为 `<你的用户名>/forum-keeper:0.2.0`
 2. 自建 registry，或用 `docker save` / `docker load` 搬运
