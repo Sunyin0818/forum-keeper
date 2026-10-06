@@ -30,48 +30,42 @@ const (
 
 // Config is the fully resolved runtime configuration.
 //
-// Fields are grouped in the same layers as .env.example, most important first:
+// Fields are grouped in the same layers as .env.example:
 //
-//  1. daily check-in (core)
-//  2. push (Feishu)
-//  3. V2EX reminders (optional)
-//  4. notification behaviour
-//  5. operations
-//  6. endpoints (advanced)
+//  1. required (service cannot start without them)
+//  2. credentials (fill these; each enables one capability)
+//  3. sensible defaults (change only when needed)
+//  4. advanced (endpoints)
 type Config struct {
-	// --- 1. daily check-in (core) ------------------------------------------
-	// There is no enable switch: a site is enabled precisely when its
-	// credential is set, and disabling it means clearing that line.
-	V2EXCookie      string // A2 (and A2O for 2FA) cookie for the mission page
-	LibraCookie     string // 2libra credential: "access_token=..." cookie or a raw bearer token
-	CheckinHour     int
-	CheckinMinute   int
-	CheckinOnStart  bool
-	CheckinLocation *time.Location // always time.Local; not an env knob
-
-	// --- 2. push (Feishu) --------------------------------------------------
+	// --- 1. required -------------------------------------------------------
 	FeishuWebhook string
 	FeishuSecret  string
 
-	// --- 3. V2EX reminders (optional; empty token = check-in only) ---------
-	V2EXToken    string
-	PollInterval time.Duration
-	MaxPages     int
-	FirstRun     string
-	MarkRead     bool
-	FilterTypes  []string
+	// --- 2. credentials -----------------------------------------------------
+	// There is no enable switch: a site is enabled precisely when its
+	// credential is set, and disabling it means clearing that line.
+	V2EXCookie  string // A2 (and A2O for 2FA) cookie for the mission page
+	LibraCookie string // 2libra credential: "access_token=..." cookie or a raw bearer token
+	V2EXToken   string // reminders only; empty = check-in only
 
-	// --- 4. notification behaviour -----------------------------------------
+	// --- 3. sensible defaults ----------------------------------------------
+	CheckinHour            int
+	CheckinMinute          int
+	CheckinOnStart         bool
+	CheckinLocation        *time.Location // always time.Local; not an env knob
+	PollInterval           time.Duration
+	MaxPages               int
+	FirstRun               string
+	MarkRead               bool
+	FilterTypes            []string
 	AlertOnError           bool
 	StartupMessage         bool
 	StartupMessageCooldown time.Duration
+	HTTPTimeout            time.Duration
+	StatePath              string
+	LogLevel               string
 
-	// --- 5. operations -----------------------------------------------------
-	HTTPTimeout time.Duration
-	StatePath   string
-	LogLevel    string
-
-	// --- 6. endpoints (advanced; defaults are the public sites) -------------
+	// --- 4. advanced (defaults are the public sites) ------------------------
 	V2EXBaseURL    string // V2EX API 2.0
 	V2EXWebBaseURL string // V2EX web, for the daily mission
 	LibraBaseURL   string // 2libra
@@ -81,24 +75,22 @@ type Config struct {
 func Load() (*Config, error) {
 	var err error
 	cfg := &Config{
-		// 1. daily check-in (core)
-		V2EXCookie:  envStr("V2EX_COOKIE", ""),
-		LibraCookie: envStr("LIBRA_COOKIE", ""),
-
-		// 2. push
+		// 1. required
 		FeishuWebhook: envStr("FEISHU_WEBHOOK", ""),
 		FeishuSecret:  envStr("FEISHU_SECRET", ""),
 
-		// 3. V2EX reminders (optional)
+		// 2. credentials
+		V2EXCookie:  envStr("V2EX_COOKIE", ""),
+		LibraCookie: envStr("LIBRA_COOKIE", ""),
 		V2EXToken:   envStr("V2EX_TOKEN", ""),
+
+		// 3. sensible defaults
 		FirstRun:    strings.ToLower(envStr("V2EX_FIRST_RUN", FirstRunSkip)),
 		FilterTypes: envList("V2EX_FILTER_TYPES"),
+		StatePath:   envStr("STATE_PATH", "state.db"),
+		LogLevel:    strings.ToLower(envStr("LOG_LEVEL", "info")),
 
-		// 5. operations
-		StatePath: envStr("STATE_PATH", "state.db"),
-		LogLevel:  strings.ToLower(envStr("LOG_LEVEL", "info")),
-
-		// 6. endpoints
+		// 4. advanced
 		V2EXBaseURL:    strings.TrimRight(envStr("V2EX_API_BASE_URL", DefaultBaseURL), "/"),
 		V2EXWebBaseURL: strings.TrimRight(envStr("V2EX_WEB_BASE_URL", DefaultV2EXWebBaseURL), "/"),
 		LibraBaseURL:   strings.TrimRight(envStr("LIBRA_BASE_URL", DefaultLibraBaseURL), "/"),
