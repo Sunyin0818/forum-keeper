@@ -128,3 +128,53 @@ func TestLibraSiteNonJSONBodyStillDetected(t *testing.T) {
 		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
 	}
 }
+
+func TestLibraSiteEnvelopeCode201WithHTTP200(t *testing.T) {
+	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"c":201,"m":"签到成功","d":null}`))
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
+	}
+}
+
+func TestLibraSiteRetriesTransientFailures(t *testing.T) {
+	old := retryBase
+	retryBase = time.Millisecond
+	t.Cleanup(func() { retryBase = old })
+
+	var calls int
+	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success after retries (detail=%q)", res.Status, res.Detail)
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+}
+
+func TestLibraSiteCloudflareChallenge(t *testing.T) {
+	site := newLibraTestSite(t, "access_token=jwt", "", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`<html><title>Just a moment...</title>Attention Required! | Cloudflare</html>`))
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("challenge must fail, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "Cloudflare") {
+		t.Fatalf("detail should name Cloudflare: %q", res.Detail)
+	}
+}

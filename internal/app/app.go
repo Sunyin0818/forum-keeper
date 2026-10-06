@@ -312,25 +312,33 @@ func (a *App) RunCheckins(ctx context.Context) error {
 	return nil
 }
 
-// maybeCheckinOnStart runs the check-in at startup when CHECKIN_ON_START is
-// enabled, unless it already ran today. The guard matters because containers
-// restart often and a restart loop must not spam the group.
+// maybeCheckinOnStart catches up at startup when CHECKIN_ON_START is enabled:
+// if today's sign-in has not happened yet (the container was down or restarting
+// across the scheduled time), it runs immediately. The per-day guard matters
+// because containers restart often and a restart loop must not spam the group.
 func (a *App) maybeCheckinOnStart(ctx context.Context) {
 	if !a.cfg.CheckinOnStart {
 		return
 	}
-	now := time.Now()
-	if last, err := a.state.LastCheckin(); err != nil {
-		a.log.Warn("could not read last check-in time", "err", err)
-	} else if !last.IsZero() && checkin.SameLocalDay(last, now, a.cfg.CheckinLocation) {
-		a.log.Info("check-in on start skipped: already ran today",
-			"last", last.In(a.checkinLoc()).Format(time.RFC3339))
+	if a.checkedInToday() {
+		a.log.Info("check-in on start skipped: already ran today")
 		return
 	}
-	a.log.Info("running check-in on start")
+	a.log.Info("running check-in on start (catch-up)")
 	if err := a.RunCheckins(ctx); err != nil {
 		a.log.Warn("check-in on start failed", "err", err)
 	}
+}
+
+// checkedInToday reports whether a check-in already ran on the current
+// calendar day in the configured zone.
+func (a *App) checkedInToday() bool {
+	last, err := a.state.LastCheckin()
+	if err != nil {
+		a.log.Warn("could not read last check-in time", "err", err)
+		return false
+	}
+	return !last.IsZero() && checkin.SameLocalDay(last, time.Now(), a.checkinLoc())
 }
 
 // checkinLoop sleeps until the configured wall-clock time and then signs in.
@@ -351,7 +359,14 @@ func (a *App) checkinLoop(ctx context.Context) {
 		case <-timer.C:
 		}
 
-		runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		// A start-up catch-up (or an earlier run today) may already have signed
+		// in; do not send a second card.
+		if a.checkedInToday() {
+			a.log.Info("scheduled check-in skipped: already ran today")
+			continue
+		}
+
+		runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		err := a.RunCheckins(runCtx)
 		cancel()
 		if err != nil {

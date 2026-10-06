@@ -11,6 +11,7 @@ package checkin
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -145,6 +146,56 @@ func newHTTPClient(timeout time.Duration) *http.Client {
 // failure builds a StatusFailed result.
 func failure(site, detail string) Result {
 	return Result{Site: site, Status: StatusFailed, Detail: detail, At: time.Now()}
+}
+
+const maxAttempts = 3
+
+// retryBase is a variable so tests can shrink the retry delay.
+var retryBase = time.Second
+
+// doWithRetry performs an HTTP request, retrying transport errors and
+// 429/5xx responses. Every check-in request is idempotent (a duplicate sign-in
+// is reported as "already"), so retrying can never double-apply.
+//
+// build is called per attempt so each request gets a fresh, un-read body.
+func doWithRetry(ctx context.Context, hc *http.Client, build func() (*http.Request, error)) (*http.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			delay := time.Duration(1<<uint(attempt)) * retryBase // 2s, 4s
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		req, err := build()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := hc.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, readSnippet(resp.Body))
+			resp.Body.Close()
+			continue
+		}
+		return resp, nil
+	}
+	return nil, lastErr
+}
+
+// readSnippet drains a bounded prefix of a response body for error messages.
+func readSnippet(r io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(r, 256))
+	return strings.TrimSpace(string(b))
 }
 
 // httpError renders a short, non-secret description of a failed request.

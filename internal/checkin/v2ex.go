@@ -121,19 +121,20 @@ func (s *V2EXSite) SignIn(ctx context.Context) Result {
 // returns the body, the final URL (to detect a redirect to /signin) and the
 // final status code.
 func (s *V2EXSite) get(ctx context.Context, rawURL string) (body, finalURL string, status int, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return "", "", 0, err
-	}
-	req.Header.Set("User-Agent", browserUA)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	req.Header.Set("Referer", s.baseURL+"/mission/daily")
-	if s.cookie != "" {
-		req.Header.Set("Cookie", s.cookie)
-	}
-
-	resp, err := s.hc.Do(req)
+	resp, err := doWithRetry(ctx, s.hc, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", browserUA)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+		req.Header.Set("Referer", s.baseURL+"/mission/daily")
+		if s.cookie != "" {
+			req.Header.Set("Cookie", s.cookie)
+		}
+		return req, nil
+	})
 	if err != nil {
 		return "", "", 0, err
 	}

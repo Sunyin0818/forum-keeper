@@ -56,11 +56,19 @@ func (s *LibraSite) SignIn(ctx context.Context) Result {
 	if err != nil {
 		return failure(s.Name(), httpError(err))
 	}
-	text := libraText(body)
+	code, text := parseLibra(body)
+
+	// Cloudflare sits in front of the API. A challenge looks nothing like a
+	// normal JSON error, so call it out instead of reporting a bland failure.
+	if isCloudflareChallenge(status, text) {
+		return failure(s.Name(), "被 Cloudflare 拦截（需要浏览器指纹，或换网络）")
+	}
 
 	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+	case status == http.StatusUnauthorized || status == http.StatusForbidden || code == 401 || code == 403:
 		return failure(s.Name(), fmt.Sprintf("Cookie 已失效或无权限（HTTP %d）", status))
+	case status == http.StatusTooManyRequests:
+		return failure(s.Name(), "请求过于频繁（HTTP 429），稍后重试")
 	case status >= 500:
 		return failure(s.Name(), fmt.Sprintf("站点错误（HTTP %d）", status))
 	}
@@ -68,11 +76,14 @@ func (s *LibraSite) SignIn(ctx context.Context) Result {
 	switch {
 	case strings.Contains(text, "已经签到") || strings.Contains(text, "已签到"):
 		return Result{Site: s.Name(), Status: StatusAlready, Detail: firstNonEmpty(checkResult(text), "今日已签过"), At: time.Now()}
-	case status == http.StatusCreated,
+	case code == http.StatusCreated,
+		status == http.StatusCreated,
 		strings.Contains(text, "签到成功"),
 		strings.Contains(text, "签到勤勉检定"):
 		return Result{Site: s.Name(), Status: StatusSuccess, Detail: firstNonEmpty(checkResult(text), "签到成功"), At: time.Now()}
-	case status == http.StatusOK && !containsAny(text, "失败", "错误", "异常", "无效", "未登录", "Unauthorized") && strings.Contains(text, "签到"):
+	case (status == http.StatusOK || code == http.StatusOK) &&
+		!containsAny(text, "失败", "错误", "异常", "无效", "未登录", "Unauthorized") &&
+		strings.Contains(text, "签到"):
 		// Fallback for a reworded success message: anything that talks about
 		// 签到 without a failure word.
 		return Result{Site: s.Name(), Status: StatusSuccess, Detail: firstNonEmpty(checkResult(text), "签到成功"), At: time.Now()}
@@ -83,22 +94,23 @@ func (s *LibraSite) SignIn(ctx context.Context) Result {
 
 // post sends the check-in request with whichever credential is configured.
 func (s *LibraSite) post(ctx context.Context, rawURL string) (body string, status int, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, nil)
-	if err != nil {
-		return "", 0, err
-	}
-	req.Header.Set("User-Agent", browserUA)
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	req.Header.Set("Origin", s.baseURL)
-	req.Header.Set("Referer", s.baseURL+"/")
-	if s.cookie != "" {
-		req.Header.Set("Cookie", s.cookie)
-	} else if s.token != "" {
-		req.Header.Set("Authorization", "Bearer "+s.token)
-	}
-
-	resp, err := s.hc.Do(req)
+	resp, err := doWithRetry(ctx, s.hc, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", browserUA)
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+		req.Header.Set("Origin", s.baseURL)
+		req.Header.Set("Referer", s.baseURL+"/")
+		if s.cookie != "" {
+			req.Header.Set("Cookie", s.cookie)
+		} else if s.token != "" {
+			req.Header.Set("Authorization", "Bearer "+s.token)
+		}
+		return req, nil
+	})
 	if err != nil {
 		return "", 0, err
 	}
@@ -118,12 +130,13 @@ type libraResp struct {
 	D json.RawMessage `json:"d"`
 }
 
-// libraText flattens the envelope into searchable text. `d` is usually an HTML
+// parseLibra extracts the logical code and the searchable text from the API
+// envelope {"c":<code>,"m":<message>,"d":<data>}. `d` is usually an HTML
 // fragment carrying the human readable result.
-func libraText(body string) string {
+func parseLibra(body string) (code int, text string) {
 	var envelope libraResp
 	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
-		return stripTags(body)
+		return 0, stripTags(body)
 	}
 
 	parts := make([]string, 0, 2)
@@ -131,7 +144,21 @@ func libraText(body string) string {
 		parts = append(parts, stripTags(envelope.M))
 	}
 	parts = append(parts, stripTags(rawToString(envelope.D)))
-	return strings.TrimSpace(strings.Join(parts, " "))
+	return envelope.C, strings.TrimSpace(strings.Join(parts, " "))
+}
+
+// isCloudflareChallenge detects an interstitial page rather than an API reply.
+func isCloudflareChallenge(status int, text string) bool {
+	if status != http.StatusForbidden && status != http.StatusServiceUnavailable {
+		return false
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range []string{"just a moment", "cf-chl", "attention required", "cloudflare", "enable javascript"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // rawToString renders a json.RawMessage that may be a string, object or null.

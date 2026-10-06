@@ -113,7 +113,7 @@ func Load() (*Config, error) {
 	if cfg.CheckinEnabled, err = envBool("CHECKIN_ENABLED", true); err != nil {
 		return nil, err
 	}
-	if cfg.CheckinOnStart, err = envBool("CHECKIN_ON_START", false); err != nil {
+	if cfg.CheckinOnStart, err = envBool("CHECKIN_ON_START", true); err != nil {
 		return nil, err
 	}
 	if cfg.CheckinHour, cfg.CheckinMinute, err = parseClock(envStr("CHECKIN_TIME", DefaultDailyCheckinTime)); err != nil {

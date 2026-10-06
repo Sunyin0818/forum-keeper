@@ -4,9 +4,16 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"testing"
 	"time"
 )
+
+// TestMain shrinks the retry backoff so retry-path tests stay fast.
+func TestMain(m *testing.M) {
+	retryBase = time.Millisecond
+	os.Exit(m.Run())
+}
 
 func TestUntilNext(t *testing.T) {
 	shanghai, err := time.LoadLocation("Asia/Shanghai")

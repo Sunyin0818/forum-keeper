@@ -85,7 +85,7 @@ docker compose logs -f      # 或 podman compose logs -f
 | `CHECKIN_ENABLED` | `true` | 签到总开关；`false` 时即使填了 Cookie 也不签到 |
 | `CHECKIN_TIME` | `06:00` | 每日签到时间（`HH:MM`，配合 `CHECKIN_TZ`） |
 | `CHECKIN_TZ` | `Asia/Shanghai` | 签到时间的时区（IANA 名称） |
-| `CHECKIN_ON_START` | `false` | 启动时也签一次；同一天重启会跳过，不会刷屏 |
+| `CHECKIN_ON_START` | `true` | 启动时补签：今天还没签就直接签；同一天重启会跳过。设为 `false` 则只等 `CHECKIN_TIME` |
 | `V2EX_COOKIE` | 空 | V2EX 会话 Cookie（`A2=...`，2FA 账号还需 `A2O`）。填了才启用 V2EX 签到 |
 | `LIBRA_COOKIE` | 空 | 2libra 的 `access_token=...` Cookie。填了才启用 2libra 签到 |
 | `LIBRA_TOKEN` | 空 | 2libra 的 Bearer Token（与 `LIBRA_COOKIE` 二选一，Cookie 优先） |
@@ -123,8 +123,10 @@ docker compose logs -f      # 或 podman compose logs -f
 - **签到幂等**：站点返回「今天已经签到过了」按成功处理，重复执行不会报错。
 - **一张卡片**：两个站点的结果合并推送，不会一次发两条。
 - **失败不中断**：一个站点 401 不影响另一个站点签到，卡片里逐条列明。
+- **自动重试**：网络错误 / 429 / 5xx 会重试 3 次（2s、4s）；签到幂等，重试不会重复签。
+- **Cloudflare 识别**：2libra 若返回人机验证页，会明确提示而不是报“签到失败”。
 - **手动触发**：`./bin/notifier --checkin`（`--dry-run` 只打印不发送）。
-- **重启不重复**：`CHECKIN_ON_START=true` 时，同一天的重启会跳过（时间戳记录在状态库里）。
+- **重启不重复、停机不漏签**：`CHECKIN_ON_START=true`（默认）下，服务启动时若发现今天还没签（比如 06:00 时容器正好在重启）会立即补签；已签过则跳过。调度到点时也会再查一次，避免一天两张卡片。
 - **不再依赖 GitHub Actions**：签到调度在容器内完成，因此没有「仓库 60 天无活动 → 定时任务被自动停用」这个问题。
 
 手动跑一次：

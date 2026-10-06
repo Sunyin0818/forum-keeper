@@ -48,7 +48,8 @@ CHECKIN_TZ=Asia/Shanghai
 ```
 
 默认每天 06:00（`CHECKIN_TZ` 时区）给两个站点各签一次，结果合并成一张飞书卡片。
-`CHECKIN_ON_START=true` 可重启时补签一次（同一天不会重复）。手工触发：
+启动时如果发现今天还没签会自动补签（`CHECKIN_ON_START`，默认开；同一天不会重复）。
+手工触发：
 
 ```bash
 docker compose exec notifier notifier --checkin

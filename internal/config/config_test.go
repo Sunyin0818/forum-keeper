@@ -17,8 +17,8 @@ func TestLoadCheckinDefaults(t *testing.T) {
 	if !cfg.CheckinEnabled {
 		t.Error("check-in should be enabled by default")
 	}
-	if cfg.CheckinOnStart {
-		t.Error("check-in on start should be off by default")
+	if !cfg.CheckinOnStart {
+		t.Error("catch-up on start should default to true")
 	}
 	if cfg.CheckinHour != 6 || cfg.CheckinMinute != 0 {
 		t.Errorf("check-in time = %02d:%02d, want 06:00", cfg.CheckinHour, cfg.CheckinMinute)
