@@ -24,6 +24,9 @@ var (
 	rewardRe = regexp.MustCompile(`已成功领取每日登录奖励\s*(\d+)\s*(铜币|银币|金币)`)
 	// anyRewardRe is the loose fallback used on the balance/mission pages.
 	anyRewardRe = regexp.MustCompile(`(\d+)\s*(铜币|银币|金币)`)
+	// coinImgRe reads the balance widget: a number followed by a coin icon.
+	// alt B = 铜币, S = 银币, G = 金币 (1 金币 = 100 银币 = 10000 铜币).
+	coinImgRe = regexp.MustCompile(`(\d+)\s*<img[^>]*alt="([BSG])"`)
 )
 
 // V2EXSite claims the V2EX daily login bonus.
@@ -55,8 +58,20 @@ func NewV2EXSite(cookie, baseURL string, timeout time.Duration) *V2EXSite {
 // Name implements Site.
 func (s *V2EXSite) Name() string { return "V2EX" }
 
-// SignIn implements Site.
+// SignIn implements Site. On success it also reads the account balance from
+// /balance so the card can show the current coins.
 func (s *V2EXSite) SignIn(ctx context.Context) Result {
+	res := s.signInOnce(ctx)
+	if res.OK() {
+		if bal := s.balance(ctx); bal != "" {
+			res.Detail = joinDetail(res.Detail, "余额 "+bal)
+		}
+	}
+	return res
+}
+
+// signInOnce performs the mission flow without the extra balance lookup.
+func (s *V2EXSite) signInOnce(ctx context.Context) Result {
 	daily, finalURL, status, err := s.get(ctx, s.baseURL+"/mission/daily")
 	if err != nil {
 		return failure(s.Name(), httpError(err))
@@ -145,6 +160,55 @@ func (s *V2EXSite) get(ctx context.Context, rawURL string) (body, finalURL strin
 		return "", resp.Request.URL.String(), resp.StatusCode, err
 	}
 	return string(b), resp.Request.URL.String(), resp.StatusCode, nil
+}
+
+// balance reads the current coins from /balance. It is best-effort: any failure
+// just omits the line from the card.
+func (s *V2EXSite) balance(ctx context.Context) string {
+	body, _, status, err := s.get(ctx, s.baseURL+"/balance")
+	if err != nil || status != http.StatusOK {
+		return ""
+	}
+	return parseCoinBalance(body)
+}
+
+// parseCoinBalance extracts "29 银币 69 铜币" from the balance widget.
+func parseCoinBalance(html string) string {
+	idx := strings.Index(html, `id="money"`)
+	if idx < 0 {
+		return ""
+	}
+	block := html[idx:]
+	if end := strings.Index(block, "</div>"); end >= 0 {
+		block = block[:end]
+	}
+
+	amounts := make(map[string]string)
+	for _, m := range coinImgRe.FindAllStringSubmatch(block, -1) {
+		if _, seen := amounts[m[2]]; !seen {
+			amounts[m[2]] = m[1]
+		}
+	}
+
+	parts := make([]string, 0, 3)
+	for _, coin := range []struct{ alt, name string }{{"G", "金币"}, {"S", "银币"}, {"B", "铜币"}} {
+		if v, ok := amounts[coin.alt]; ok {
+			parts = append(parts, v+" "+coin.name)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// joinDetail appends detail b to a with a separator, skipping empty parts.
+func joinDetail(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + "，" + b
+	}
 }
 
 func isLoginRedirect(rawURL string) bool {

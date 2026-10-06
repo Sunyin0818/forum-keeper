@@ -114,6 +114,44 @@ func TestV2EXSiteStaleToken(t *testing.T) {
 	}
 }
 
+func TestParseCoinBalance(t *testing.T) {
+	page := `<div class="header"><div id="money"><a href="/balance" class="balance_area" style="">29 <img src="/static/img/silver@2x.png" height="16" alt="S" border="0" /> 69 <img src="/static/img/bronze@2x.png" height="16" alt="B" border="0" /></a></div>&nbsp;<a href="/">V2EX</a></div>`
+
+	if got := parseCoinBalance(page); got != "29 银币 69 铜币" {
+		t.Fatalf("parseCoinBalance = %q, want %q", got, "29 银币 69 铜币")
+	}
+
+	withGold := `<div id="money"><a href="/balance" class="balance_area">5 <img src="/static/img/gold@2x.png" alt="G" /> 29 <img src="/static/img/silver@2x.png" alt="S" /> 69 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>`
+	if got := parseCoinBalance(withGold); got != "5 金币 29 银币 69 铜币" {
+		t.Fatalf("parseCoinBalance = %q", got)
+	}
+
+	if got := parseCoinBalance("<html>no balance widget</html>"); got != "" {
+		t.Fatalf("parseCoinBalance = %q, want empty", got)
+	}
+}
+
+func TestV2EXSiteSignInIncludesBalance(t *testing.T) {
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			w.Write([]byte(`<html>每日登录奖励已领取</html>`))
+		case "/balance":
+			w.Write([]byte(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 69 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusAlready {
+		t.Fatalf("status = %q, want already", res.Status)
+	}
+	if !strings.Contains(res.Detail, "余额 29 银币 69 铜币") {
+		t.Fatalf("detail should include the balance: %q", res.Detail)
+	}
+}
+
 func TestV2EXSiteSendsCookie(t *testing.T) {
 	var got string
 	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
