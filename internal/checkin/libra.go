@@ -66,7 +66,7 @@ func (s *LibraSite) SignIn(ctx context.Context) Result {
 	if err != nil {
 		return failure(s.Name(), httpError(err))
 	}
-	code, text := parseLibra(body)
+	env, text := parseLibra(body)
 
 	// Cloudflare sits in front of the API. A challenge looks nothing like a
 	// normal JSON error, so call it out instead of reporting a bland failure.
@@ -75,7 +75,7 @@ func (s *LibraSite) SignIn(ctx context.Context) Result {
 	}
 
 	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden || code == 401 || code == 403:
+	case status == http.StatusUnauthorized || status == http.StatusForbidden || env.C == 401 || env.C == 403:
 		return failure(s.Name(), fmt.Sprintf("Cookie 已失效或无权限（HTTP %d）", status))
 	case status == http.StatusTooManyRequests:
 		return failure(s.Name(), "请求过于频繁（HTTP 429），稍后重试")
@@ -83,19 +83,32 @@ func (s *LibraSite) SignIn(ctx context.Context) Result {
 		return failure(s.Name(), fmt.Sprintf("站点错误（HTTP %d）", status))
 	}
 
+	// Preferred path: the API's structured result. Real response:
+	//   {"c":200,"m":"请求成功","d":{"ok":true,"alreadySigned":true,
+	//     "checkData":null,"streak":5,"coins":0,"balance":134034}}
+	if data, ok := parseLibraData(env.D); ok {
+		if !data.OK {
+			return failure(s.Name(), firstNonEmpty(stripTags(env.M), "签到失败"))
+		}
+		if data.AlreadySigned {
+			return Result{Site: s.Name(), Status: StatusAlready, Detail: libraDetail("今日已签过", data), At: time.Now()}
+		}
+		return Result{Site: s.Name(), Status: StatusSuccess, Detail: libraDetail("签到成功", data), At: time.Now()}
+	}
+
+	// Fallback for non-JSON bodies or a changed shape.
 	switch {
 	case strings.Contains(text, "已经签到") || strings.Contains(text, "已签到"):
 		return Result{Site: s.Name(), Status: StatusAlready, Detail: firstNonEmpty(checkResult(text), "今日已签过"), At: time.Now()}
-	case code == http.StatusCreated,
+	case env.C == http.StatusCreated,
 		status == http.StatusCreated,
 		strings.Contains(text, "签到成功"),
 		strings.Contains(text, "签到勤勉检定"):
 		return Result{Site: s.Name(), Status: StatusSuccess, Detail: firstNonEmpty(checkResult(text), "签到成功"), At: time.Now()}
-	case (status == http.StatusOK || code == http.StatusOK) &&
+	case (status == http.StatusOK || env.C == http.StatusOK) &&
 		!containsAny(text, "失败", "错误", "异常", "无效", "未登录", "Unauthorized") &&
 		strings.Contains(text, "签到"):
-		// Fallback for a reworded success message: anything that talks about
-		// 签到 without a failure word.
+		// Anything that talks about 签到 without a failure word.
 		return Result{Site: s.Name(), Status: StatusSuccess, Detail: firstNonEmpty(checkResult(text), "签到成功"), At: time.Now()}
 	default:
 		return failure(s.Name(), libraFailureDetail(status, text))
@@ -140,21 +153,62 @@ type libraResp struct {
 	D json.RawMessage `json:"d"`
 }
 
-// parseLibra extracts the logical code and the searchable text from the API
-// envelope {"c":<code>,"m":<message>,"d":<data>}. `d` is usually an HTML
-// fragment carrying the human readable result.
-func parseLibra(body string) (code int, text string) {
-	var envelope libraResp
-	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
-		return 0, stripTags(body)
+// libraData is the `d` object of a sign-in response, e.g.
+// {"ok":true,"alreadySigned":true,"checkData":null,"streak":5,"coins":0,"balance":134034}
+type libraData struct {
+	OK            bool `json:"ok"`
+	AlreadySigned bool `json:"alreadySigned"`
+	Streak        int  `json:"streak"`
+	Coins         int  `json:"coins"`
+	Balance       int  `json:"balance"`
+	CheckData     any  `json:"checkData"`
+}
+
+// parseLibra extracts the envelope and a searchable text rendering of it.
+func parseLibra(body string) (libraResp, string) {
+	var env libraResp
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		return libraResp{}, stripTags(body)
 	}
 
 	parts := make([]string, 0, 2)
-	if envelope.M != "" {
-		parts = append(parts, stripTags(envelope.M))
+	if env.M != "" {
+		parts = append(parts, stripTags(env.M))
 	}
-	parts = append(parts, stripTags(rawToString(envelope.D)))
-	return envelope.C, strings.TrimSpace(strings.Join(parts, " "))
+	parts = append(parts, stripTags(rawToString(env.D)))
+	return env, strings.TrimSpace(strings.Join(parts, " "))
+}
+
+// parseLibraData decodes `d` as the structured result. It reports false when
+// `d` is null, a string or an array (older/other shapes), so the caller can
+// fall back to text matching.
+func parseLibraData(raw json.RawMessage) (libraData, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return libraData{}, false
+	}
+	var d libraData
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return libraData{}, false
+	}
+	return d, true
+}
+
+// libraDetail renders "今日已签过（连续 5 天，余额 134034）"-style details.
+func libraDetail(prefix string, d libraData) string {
+	parts := make([]string, 0, 3)
+	if d.Coins > 0 {
+		parts = append(parts, fmt.Sprintf("+%d 金币", d.Coins))
+	}
+	if d.Streak > 0 {
+		parts = append(parts, fmt.Sprintf("连续 %d 天", d.Streak))
+	}
+	if d.Balance > 0 {
+		parts = append(parts, fmt.Sprintf("余额 %d", d.Balance))
+	}
+	if len(parts) == 0 {
+		return prefix
+	}
+	return prefix + "（" + strings.Join(parts, "，") + "）"
 }
 
 // isCloudflareChallenge detects an interstitial page rather than an API reply.

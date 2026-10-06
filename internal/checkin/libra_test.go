@@ -123,6 +123,46 @@ func TestLibraSiteAutoDetectsCredential(t *testing.T) {
 	}
 }
 
+func TestLibraSiteRealAlreadyShape(t *testing.T) {
+	// Captured from the live API: `d` is an object, success is signalled by ok/alreadySigned.
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"c":200,"m":"请求成功","d":{"ok":true,"alreadySigned":true,"checkData":null,"streak":5,"coins":0,"balance":134034}}`))
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusAlready || !res.OK() {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if !strings.Contains(res.Detail, "连续 5") || !strings.Contains(res.Detail, "134034") {
+		t.Fatalf("detail should carry streak and balance: %q", res.Detail)
+	}
+}
+
+func TestLibraSiteRealFreshShape(t *testing.T) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"c":200,"m":"请求成功","d":{"ok":true,"alreadySigned":false,"checkData":null,"streak":6,"coins":2,"balance":134036}}`))
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "+2 金币") || !strings.Contains(res.Detail, "连续 6") {
+		t.Fatalf("detail should carry coins and streak: %q", res.Detail)
+	}
+}
+
+func TestLibraSiteOKFalseIsFailure(t *testing.T) {
+	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"c":200,"m":"操作失败","d":{"ok":false}}`))
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("ok=false must fail, got %+v", res)
+	}
+}
+
 func TestLibraSiteNonJSONBodyStillDetected(t *testing.T) {
 	site := newLibraTestSite(t, "access_token=jwt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
