@@ -4,7 +4,7 @@ name: forum-keeper
 services:
   forum-keeper:
     # 钉版本，升级改这一行。
-    image: ghcr.io/sunyin0818/forum-keeper:0.2.0
+    image: ghcr.io/sunyin0818/forum-keeper:0.3.0
     container_name: forum-keeper
     restart: unless-stopped
     env_file:
