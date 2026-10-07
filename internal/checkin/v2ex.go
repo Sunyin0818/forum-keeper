@@ -22,11 +22,17 @@ var (
 	onceRe = regexp.MustCompile(`/mission/daily/redeem\?once=(\d+)`)
 	// rewardRe matches the explicit confirmation shown right after claiming.
 	rewardRe = regexp.MustCompile(`已成功领取每日登录奖励\s*(\d+)\s*(铜币|银币|金币)`)
-	// anyRewardRe is the loose fallback used on the balance/mission pages.
+	// anyRewardRe is the loose fallback used on the claim pages when the
+	// explicit confirmation is missing or malformed.
 	anyRewardRe = regexp.MustCompile(`(\d+)\s*(铜币|银币|金币)`)
 	// coinImgRe reads the balance widget: a number followed by a coin icon.
 	// alt B = 铜币, S = 银币, G = 金币 (1 金币 = 100 银币 = 10000 铜币).
 	coinImgRe = regexp.MustCompile(`(\d+)\s*<img[^>]*alt="([BSG])"`)
+	// ledgerRewardRe matches the /balance ledger row V2EX writes for the daily
+	// bonus, e.g. "20261007 的每日登录奖励 8 铜币". The ledger is written
+	// server-side, so it is a more reliable source for the day's reward than the
+	// claim page's flash message.
+	ledgerRewardRe = regexp.MustCompile(`\d{8}\s*的每日登录奖励\s*(\d+)\s*(铜币|银币|金币)`)
 )
 
 // V2EXSite claims the V2EX daily login bonus.
@@ -58,57 +64,80 @@ func NewV2EXSite(cookie, baseURL string, timeout time.Duration) *V2EXSite {
 // Name implements Site.
 func (s *V2EXSite) Name() string { return "V2EX" }
 
-// SignIn implements Site. On success it also reads the account balance from
-// /balance so the card can show the current coins.
+// SignIn implements Site. After a claim it also reads /balance once: the widget
+// supplies the current coins, and the ledger row "YYYYMMDD 的每日登录奖励 N 铜币"
+// supplies the reward the site actually paid today. The claim page only surfaces
+// that reward in a flash message, so the ledger wins whenever both are present -
+// it also lets an "already signed" run report what today's sign-in earned.
 func (s *V2EXSite) SignIn(ctx context.Context) Result {
-	res := s.signInOnce(ctx)
-	if res.OK() {
-		if bal := s.balance(ctx); bal != "" {
+	res, reward := s.signInOnce(ctx)
+	if !res.OK() {
+		return res
+	}
+
+	page, hasBalance := s.balancePage(ctx)
+	if hasBalance {
+		if fromLedger := parseLedgerReward(page); fromLedger != "" {
+			reward = fromLedger
+		}
+	}
+
+	switch {
+	case reward != "":
+		res.Detail = withReward(res.Detail, reward)
+	case res.Status == StatusSuccess:
+		// Claimed, but neither the flash nor the ledger named an amount.
+		res.Detail += "（奖励信息未识别）"
+	}
+	if hasBalance {
+		if bal := parseCoinBalance(page); bal != "" {
 			res.Detail = joinDetail(res.Detail, "余额 "+bal)
 		}
 	}
 	return res
 }
 
-// signInOnce performs the mission flow without the extra balance lookup.
-func (s *V2EXSite) signInOnce(ctx context.Context) Result {
+// signInOnce performs the mission flow and returns the reward it could read
+// from the claim pages (a flash message), if any. The caller resolves that
+// against the /balance ledger.
+func (s *V2EXSite) signInOnce(ctx context.Context) (Result, string) {
 	daily, finalURL, status, err := s.get(ctx, s.baseURL+"/mission/daily")
 	if err != nil {
-		return failure(s.Name(), httpError(err))
+		return failure(s.Name(), httpError(err)), ""
 	}
 	if isLoginRedirect(finalURL) || strings.Contains(daily, "You need to sign in") || strings.Contains(daily, "请先登录") {
-		return failure(s.Name(), "Cookie 已失效或未登录（需要 A2，2FA 账号还需 A2O）")
+		return failure(s.Name(), "Cookie 已失效或未登录（需要 A2，2FA 账号还需 A2O）"), ""
 	}
 	if status != http.StatusOK {
-		return failure(s.Name(), fmt.Sprintf("签到页返回 HTTP %d", status))
+		return failure(s.Name(), fmt.Sprintf("签到页返回 HTTP %d", status)), ""
 	}
 
 	if strings.Contains(daily, "每日登录奖励已领取") {
 		return Result{
 			Site:   s.Name(),
 			Status: StatusAlready,
-			Detail: withReward("今日已签过", daily),
+			Detail: "今日已签过",
 			At:     time.Now(),
-		}
+		}, extractReward(daily)
 	}
 
 	m := onceRe.FindStringSubmatch(daily)
 	if m == nil {
-		return failure(s.Name(), "未找到签到 token，页面结构可能已变化")
+		return failure(s.Name(), "未找到签到 token，页面结构可能已变化"), ""
 	}
 
 	redeemURL := fmt.Sprintf("%s/mission/daily/redeem?once=%s", s.baseURL, url.QueryEscape(m[1]))
 	redeem, _, redeemStatus, err := s.get(ctx, redeemURL)
 	if err != nil {
-		return failure(s.Name(), httpError(err))
+		return failure(s.Name(), httpError(err)), ""
 	}
 	if redeemStatus != http.StatusOK {
-		return failure(s.Name(), fmt.Sprintf("领取奖励返回 HTTP %d", redeemStatus))
+		return failure(s.Name(), fmt.Sprintf("领取奖励返回 HTTP %d", redeemStatus)), ""
 	}
 	// A stale token is reported with HTTP 200, so it has to be sniffed out of
 	// the body before the success fallback below.
 	if strings.Contains(redeem, "请重新点击一次") {
-		return failure(s.Name(), "token 已失效（请重新点击一次以领取每日登录奖励）")
+		return failure(s.Name(), "token 已失效（请重新点击一次以领取每日登录奖励）"), ""
 	}
 
 	// The "已成功领取" hint only exists on the redeem response, so check both.
@@ -119,17 +148,12 @@ func (s *V2EXSite) signInOnce(ctx context.Context) Result {
 	}
 	for _, page := range pages {
 		if strings.Contains(page, "每日登录奖励已领取") || rewardRe.MatchString(page) {
-			return Result{Site: s.Name(), Status: StatusSuccess, Detail: withReward("签到成功", page), At: time.Now()}
+			return Result{Site: s.Name(), Status: StatusSuccess, Detail: "签到成功", At: time.Now()}, extractReward(pages...)
 		}
 	}
 	// A 200 on the redeem endpoint is the site's success signal; the reward text
 	// may simply be rendered by JavaScript we do not execute.
-	return Result{
-		Site:   s.Name(),
-		Status: StatusSuccess,
-		Detail: withReward("签到成功（奖励信息未识别）", pages...),
-		At:     time.Now(),
-	}
+	return Result{Site: s.Name(), Status: StatusSuccess, Detail: "签到成功", At: time.Now()}, extractReward(pages...)
 }
 
 // get performs one GET with the session cookie, following redirects. It
@@ -162,14 +186,26 @@ func (s *V2EXSite) get(ctx context.Context, rawURL string) (body, finalURL strin
 	return string(b), resp.Request.URL.String(), resp.StatusCode, nil
 }
 
-// balance reads the current coins from /balance. It is best-effort: any failure
-// just omits the line from the card.
-func (s *V2EXSite) balance(ctx context.Context) string {
+// balancePage fetches /balance, which carries both the current coins widget and
+// the reward ledger. It is best-effort: any failure just omits those lines from
+// the card.
+func (s *V2EXSite) balancePage(ctx context.Context) (string, bool) {
 	body, _, status, err := s.get(ctx, s.baseURL+"/balance")
 	if err != nil || status != http.StatusOK {
+		return "", false
+	}
+	return body, true
+}
+
+// parseLedgerReward extracts "获得 8 铜币" from the newest daily-bonus row of the
+// /balance ledger, or "" when there is none. V2EX displays the newest entries
+// first, so the first match is the most recent sign-in reward.
+func parseLedgerReward(html string) string {
+	m := ledgerRewardRe.FindStringSubmatch(html)
+	if m == nil {
 		return ""
 	}
-	return parseCoinBalance(body)
+	return fmt.Sprintf("获得 %s %s", m[1], m[2])
 }
 
 // parseCoinBalance extracts "29 银币 69 铜币" from the balance widget.
@@ -219,12 +255,13 @@ func isLoginRedirect(rawURL string) bool {
 	return strings.HasPrefix(u.Path, "/signin")
 }
 
-// withReward prefixes detail with the extracted reward, when one is found.
-func withReward(prefix string, pages ...string) string {
-	if reward := extractReward(pages...); reward != "" {
-		return fmt.Sprintf("%s（%s）", prefix, reward)
+// withReward renders detail with the reward as a parenthesised suffix, e.g.
+// "签到成功（获得 8 铜币）". An empty reward leaves the detail untouched.
+func withReward(prefix, reward string) string {
+	if reward == "" {
+		return prefix
 	}
-	return prefix
+	return fmt.Sprintf("%s（%s）", prefix, reward)
 }
 
 func extractReward(pages ...string) string {

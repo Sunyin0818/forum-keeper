@@ -114,6 +114,88 @@ func TestV2EXSiteStaleToken(t *testing.T) {
 	}
 }
 
+func TestV2EXSiteRewardFallsBackToLedger(t *testing.T) {
+	// The real claim page's flash may omit the amount; the /balance ledger always
+	// records it, so it must win over an empty flash.
+	claimed := false
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/mission/daily" && !claimed:
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=98765">领取</a>`))
+		case r.URL.Path == "/mission/daily/redeem":
+			claimed = true
+			w.Write([]byte(`<html><div class="message">已成功领取每日登录奖励</div></html>`))
+		case r.URL.Path == "/mission/daily":
+			w.Write([]byte(`<html>每日登录奖励已领取</html>`))
+		case r.URL.Path == "/balance":
+			w.Write([]byte(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 77 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>
+				<tr><td class="d"><span class="gray">20261007 的每日登录奖励 8 铜币</span></td></tr>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "获得 8 铜币") {
+		t.Fatalf("reward should come from the ledger: %q", res.Detail)
+	}
+	if !strings.Contains(res.Detail, "余额 29 银币 77 铜币") {
+		t.Fatalf("balance missing: %q", res.Detail)
+	}
+}
+
+func TestV2EXSiteAlreadySignedReportsLedgerReward(t *testing.T) {
+	// A repeat run still knows what today's sign-in earned, thanks to the ledger.
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			w.Write([]byte(`<html>每日登录奖励已领取</html>`))
+		case "/balance":
+			w.Write([]byte(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 77 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>
+				<span class="gray">20261007 的每日登录奖励 8 铜币</span>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusAlready {
+		t.Fatalf("status = %q, want already (detail=%q)", res.Status, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "今日已签过（获得 8 铜币）") {
+		t.Fatalf("already-signed detail should carry today's reward: %q", res.Detail)
+	}
+}
+
+func TestV2EXSiteRewardUnidentified(t *testing.T) {
+	// Claim succeeds but neither the flash nor /balance names an amount.
+	claimed := false
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/mission/daily" && !claimed:
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=98765">领取</a>`))
+		case r.URL.Path == "/mission/daily/redeem":
+			claimed = true
+			w.Write([]byte(`<html>已成功领取每日登录奖励</html>`))
+		case r.URL.Path == "/mission/daily":
+			w.Write([]byte(`<html>每日登录奖励已领取</html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "奖励信息未识别") {
+		t.Fatalf("detail should flag the unknown reward: %q", res.Detail)
+	}
+}
+
 func TestParseCoinBalance(t *testing.T) {
 	page := `<div class="header"><div id="money"><a href="/balance" class="balance_area" style="">29 <img src="/static/img/silver@2x.png" height="16" alt="S" border="0" /> 69 <img src="/static/img/bronze@2x.png" height="16" alt="B" border="0" /></a></div>&nbsp;<a href="/">V2EX</a></div>`
 
@@ -128,6 +210,18 @@ func TestParseCoinBalance(t *testing.T) {
 
 	if got := parseCoinBalance("<html>no balance widget</html>"); got != "" {
 		t.Fatalf("parseCoinBalance = %q, want empty", got)
+	}
+}
+
+func TestParseLedgerReward(t *testing.T) {
+	page := `<tr><td class="d">每日登录奖励</td><td class="d"><span class="gray">20261007 的每日登录奖励 8 铜币</span></td></tr>
+	<tr><td class="d">每日登录奖励</td><td class="d"><span class="gray">20261006 的每日登录奖励 15 铜币</span></td></tr>`
+
+	if got := parseLedgerReward(page); got != "获得 8 铜币" {
+		t.Fatalf("parseLedgerReward = %q, want the newest row", got)
+	}
+	if got := parseLedgerReward("<html>no ledger here</html>"); got != "" {
+		t.Fatalf("parseLedgerReward = %q, want empty", got)
 	}
 }
 

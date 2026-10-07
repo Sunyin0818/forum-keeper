@@ -104,6 +104,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/mission/daily/redeem":
             STATE["mission_claimed"] = True
             return self._html("<html>已成功领取每日登录奖励 42 铜币</html>")
+        if path == "/balance":
+            return self._html(
+                '<div id="money"><a href="/balance">29 '
+                '<img src="/static/img/silver@2x.png" alt="S" /> 77 '
+                '<img src="/static/img/bronze@2x.png" alt="B" /></a></div>'
+                '<span class="gray">20261007 的每日登录奖励 42 铜币</span>'
+            )
         if path == "/api/v2/member":
             return self._json({"result": {"id": 1, "username": "tester"}})
         if path == "/api/v2/notifications":

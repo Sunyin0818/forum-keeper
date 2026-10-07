@@ -92,6 +92,7 @@ assert hooks[3]["card"]["header"]["template"] == "green", checkin
 assert "每日签到" in checkin, checkin
 assert "V2EX" in checkin and "2libra" in checkin, checkin
 assert "42 铜币" in checkin, checkin
+assert "余额 29 银币 77 铜币" in checkin, checkin
 assert "签到勤勉检定" in checkin, checkin
 
 # Real V2EX notifications carry an HTML fragment in `text`. None of that markup
