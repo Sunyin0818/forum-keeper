@@ -47,12 +47,15 @@ LIBRA_COOKIE=access_token=eyJhbGci...
 
 ### 3. 配置并运行
 
+本地直接跑 Go（容器只用于云端，见 [部署到云端](#部署到云端)）。
+
 ```bash
-./scripts/init-env.sh   # 从 .env.example 生成 .env（已存在则拒绝覆盖，权限 0600）
+cp -n .env.example .env && chmod 600 .env   # -n：已有的 .env 不会被覆盖
 $EDITOR .env            # 填 FEISHU_WEBHOOK + 站点凭据
 
-docker compose up -d --build   # Podman 用 podman compose
-docker compose logs -f
+go build -o bin/forum-keeper ./cmd/forum-keeper
+. ./scripts/local-env.sh        # 读 .env（cookie 里有分号，不能直接 source）
+./bin/forum-keeper              # 常驻；开发时 go run ./cmd/forum-keeper
 ```
 
 最小配置（只签到、不提醒）：
@@ -63,11 +66,12 @@ V2EX_COOKIE=A2=...
 LIBRA_COOKIE=access_token=...
 ```
 
-不做容器也行：[不使用容器](#不使用容器)。
-
 ## 配置
 
 命名规则：同一模块共用前缀，按「必填 → 凭据 → 默认即可 → 高级」排列。
+
+下面的表格是速查。日常 `.env` 里只需要 `.env.example` 列的那 4 个键，其余不写即默认；
+想直接拿一份写全了默认值的配置，或拷某一行出来改，用 [`.env.reference`](.env.reference)。
 
 ### 必填
 
@@ -104,7 +108,6 @@ LIBRA_COOKIE=access_token=...
 | `HTTP_TIMEOUT` | `20s` | 单次请求超时 |
 | `STATE_PATH` | `state.db` | 状态文件；容器内为 `/data/state.db` |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `HTTPS_PROXY` | 空 | 仅 V2EX 与签到请求走它，飞书始终直连 |
 
 ### 高级（默认指向公网站点）
 
@@ -113,21 +116,6 @@ LIBRA_COOKIE=access_token=...
 | `V2EX_API_BASE_URL` | `https://www.v2ex.com/api/v2` |
 | `V2EX_WEB_BASE_URL` | `https://www.v2ex.com` |
 | `LIBRA_BASE_URL` | `https://2libra.com` |
-
-### 代理说明
-
-`v2ex.com` 在部分网络不可达（DNS 污染），需要代理；`open.feishu.cn` 必须直连。
-代理只读标准变量 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`，只作用于 V2EX 与签到请求。
-
-容器内的 `127.0.0.1` 是容器自己，所以本地 Clash 要写宿主机地址：
-
-```ini
-HTTPS_PROXY=http://host.docker.internal:7897   # Podman 用 host.containers.internal
-NO_PROXY=localhost,127.0.0.1
-```
-
-云端服务器直连 v2ex.com，**不要**设这一项。宿主机直接跑二进制时
-`scripts/local-env.sh` 会自动把 `host.docker.internal` 改写成 `127.0.0.1`。
 
 ## 命令
 
@@ -148,8 +136,6 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
 . ./scripts/local-env.sh
 ./bin/forum-keeper --checkin --dry-run
 ```
-
-装了 make 可以用 `make build` / `test` / `dry-run` / `checkin` / `checkin-dry-run` / `run`。
 
 ## 卡片长这样
 
@@ -191,32 +177,54 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
 |---|---|
 | `V2EX rejected the token` | `V2EX_TOKEN` 失效，去设置页换新 |
 | 飞书 `code=19021 sign match fail` | 开了签名校验但 `FEISHU_SECRET` 没填或填错 |
-| `dial tcp ... timeout` | V2EX 不可达，检查 `HTTPS_PROXY`（容器里别写 `127.0.0.1`） |
-| 签到卡片 `Cookie 已失效` | `V2EX_COOKIE` / `LIBRA_COOKIE` 过期，重新获取后 `docker compose up -d` |
+| `dial tcp ... timeout` | V2EX 不可达。云端直连不该出现；本地看 shell 里的 `HTTPS_PROXY` 是否指向可用的代理 |
+| 签到卡片 `Cookie 已失效` | `V2EX_COOKIE` / `LIBRA_COOKIE` 过期。本地改完 `.env` 重启进程；云端 `docker compose up -d` |
+| 云端每次 `up` 刷一串 `WARN The "o16" variable is not set` | cookie 值里含 `$`（`_ga_*`、`FCNEC` 这类分析 cookie），被 Docker Compose 当成变量插值吃掉了。**功能不受影响** —— 认证字段 `A2`/`A2O`/`access_token` 不含 `$`。把 cookie 精简成只留 `A2=...; A2O=...` 即可消除 |
+| 云端 `pull access denied` | 服务器在拉一个不存在的镜像；确认 `compose.yaml` 的 `image:` 是 `ghcr.io/sunyin0818/forum-keeper:<版本>` |
 | 签到卡片 `未找到签到 token` | V2EX 未登录（Cookie 不全，2FA 缺 `A2O`），或页面结构变了 |
 | 一直没有提醒推送 | 正常：首次启动 `V2EX_FIRST_RUN=skip` 只记录不推送；无新消息时 info 不打印日志。用 `LOG_LEVEL=debug` 确认 |
 | 签到时间不对 | 容器 `TZ` 不对，`CHECKIN_TIME` 按它解释 |
 | 不想用签到 | 清空 `V2EX_COOKIE` 和 `LIBRA_COOKIE`（凭据存在即启用） |
 
-## 不使用容器
-
-```bash
-go build -o bin/forum-keeper ./cmd/forum-keeper
-. ./scripts/local-env.sh        # 载入 .env 并适配宿主机代理地址
-./bin/forum-keeper              # 常驻
-```
-
 ## 部署到云端
 
-`deploy/` 是自包含的云端包（钉版本拉镜像、无代理、持久卷、`TZ`）：
+`compose.yaml` 是唯一的部署产物定义，`image:` 钉着发布版本。
 
 ```bash
-scp -r deploy/ server:/opt/forum-keeper/
-ssh server 'cd /opt/forum-keeper && cp env.example .env && chmod 600 .env && $EDITOR .env'
+# 在仓库根目录执行。云端只要两个文件
+ssh server 'mkdir -p /opt/forum-keeper'
+scp compose.yaml .env.example server:/opt/forum-keeper/
+
+ssh server 'cd /opt/forum-keeper && cp -n .env.example .env && chmod 600 .env && $EDITOR .env'
 ssh server 'cd /opt/forum-keeper && docker compose pull && docker compose up -d'
 ```
 
-细节与排查见 `deploy/README.md`。云端**不要**用仓库根目录的 `compose.yaml`（那是给本地开发用的）。
+`.env` 里填 `FEISHU_WEBHOOK` 和要启用的凭据（`V2EX_TOKEN` 留空就只签到）。
+
+服务器直连 v2ex.com，不需要代理。受限网络的服务器要过代理，就在 `compose.yaml` 的
+`environment:` 里加一行 `HTTPS_PROXY: http://<该服务器的代理>`（只作用于 V2EX 与签到请求，
+飞书始终直连）。本地运行需要的代理由本机环境自行提供。
+
+首次启动应该看到（群里会先收到一张 🟢 启动卡片，**不会刷屏** —— `V2EX_FIRST_RUN=skip`
+把当前未读全部记为已见但不推送）：
+
+```
+INFO authenticated with V2EX              username=...
+INFO forum-keeper starting               interval=1m0s first_run=skip state=/data/state.db
+INFO startup message sent
+INFO first run: recording existing notifications without pushing  count=N
+```
+
+升级 = 改 `compose.yaml` 里 `image:` 这一行，重新拷过去：
+
+```bash
+scp compose.yaml server:/opt/forum-keeper/
+ssh server 'cd /opt/forum-keeper && docker compose pull && docker compose up -d'
+```
+
+状态卷 `data`（实际卷名 `forum-keeper_data`）不受影响，不会重推历史提醒。
+国内服务器拉 GHCR 慢的话：配 Docker Hub 镜像（仓库 Secrets 加 `DOCKERHUB_USERNAME` /
+`DOCKERHUB_TOKEN`，workflow 会自动多推一份），或 `docker save` / `docker load` 搬运。
 
 镜像发布在 GHCR，push `v*` tag 会依次：跑测试 → 构建并推送镜像 → **创建 GitHub Release**（自动生成 release notes）：
 
@@ -228,21 +236,14 @@ git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
 
 包默认 private，要跨机器拉取就在 GitHub → Packages 里改为 public，或 `docker login ghcr.io`。
 
-> **改名后的旧包残留**：GHCR 包名不会随仓库改名而变化，旧的
-> `ghcr.io/sunyin0818/v2ex-notifier` 仍然存在。删除整个包需要带
-> `delete:packages` 权限的 PAT，GITHUB_TOKEN 不行：
->
-> ```bash
-> GHCR_TOKEN=<pat> ./scripts/ghcr-delete-package.sh v2ex-notifier          # 预演
-> GHCR_TOKEN=<pat> ./scripts/ghcr-delete-package.sh v2ex-notifier --apply  # 删除
-> ```
->
-> 或直接在网页删除：<https://github.com/users/Sunyin0818/packages/container/v2ex-notifier/settings>
+> **改名后的旧包残留**：仓库改名不会连带改 GHCR 的包名。旧的
+> `ghcr.io/sunyin0818/v2ex-notifier` 若还在，在网页上删：
+> <https://github.com/users/Sunyin0818/packages/container/v2ex-notifier/settings>
 
 ## 开发
 
 ```bash
-./scripts/init-env.sh   # 生成 .env（0600，已存在不覆盖）
+cp -n .env.example .env && chmod 600 .env   # 仅首次
 ./scripts/dry-run.sh    # 只读：列出待记录/待推送的提醒
 ./scripts/smoke.sh      # 离线端到端：mock V2EX + mock 飞书
 
@@ -259,5 +260,7 @@ internal/checkin/   签到（V2EX / 2libra）+ 调度
 internal/feishu/    飞书 webhook 与卡片渲染
 internal/store/     bbolt：已推送提醒 id、上次签到时间
 internal/app/       组装与主循环
-deploy/             云端部署包
+compose.yaml     云端运行定义（本地不跑容器）：跑哪个镜像、怎么跑
+Dockerfile       CI 构建镜像的唯一入口
+scripts/         dry-run / smoke / local-env 等宿主机辅助脚本
 ```

@@ -30,7 +30,7 @@ const (
 
 // Config is the fully resolved runtime configuration.
 //
-// Fields are grouped in the same layers as .env.example:
+// Fields are grouped in the same layers as .env.reference:
 //
 //  1. required (service cannot start without them)
 //  2. credentials (fill these; each enables one capability)

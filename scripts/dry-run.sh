@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Single dry-run poll: prints what would be pushed, sends nothing, mutates no
-# state. Equivalent to `make dry-run` but without needing GNU make.
+# Single dry-run poll: prints what would be pushed, sends nothing, mutates no state.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Sources .env and rewrites container-only host names (host.docker.internal)
-# for host execution.
+# Sources .env.
 # shellcheck source=scripts/local-env.sh
 . ./scripts/local-env.sh
 

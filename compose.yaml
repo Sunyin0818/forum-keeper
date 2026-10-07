@@ -1,43 +1,33 @@
-# Compose project name, so the volume is always forum-keeper_data regardless
-# of the checkout directory name.
+# 云端运行定义。部署与升级见 README「部署到云端」。
 name: forum-keeper
 
 services:
   forum-keeper:
-    build:
-      context: .
-      args:
-        VERSION: ${VERSION:-dev}
-        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
-    # Local builds win by default. To run a published image instead, set
-    #   FORUM_KEEPER_IMAGE=ghcr.io/sunyin0818/forum-keeper:latest
-    # and use `compose pull` + `compose up --no-build`.
-    image: ${FORUM_KEEPER_IMAGE:-forum-keeper:latest}
+    # 钉版本，升级改这一行。
+    image: ghcr.io/sunyin0818/forum-keeper:0.2.0
     container_name: forum-keeper
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      # Container-internal path; always on the mounted volume.
       STATE_PATH: /data/state.db
-      # Wall-clock zone for logs, cards and the check-in schedule. Docker
-      # defaults to UTC, which would run CHECKIN_TIME at the wrong local hour.
+      # 影响签到调度与卡片/日志时间戳；docker 默认 UTC。
       TZ: ${TZ:-Asia/Shanghai}
-      # Podman copies the host's *_proxy variables into containers, where
-      # 127.0.0.1 means the container itself - a silently wrong value that looks
-      # like a V2EX outage. Docker does not copy them. Clear the inherited
-      # lowercase forms so the explicit config in .env is the only source.
-      http_proxy: ""
-      https_proxy: ""
-      # HTTPS_PROXY has no default here on purpose: the right value is
-      # environment-specific. Set HTTPS_PROXY in .env for a local Clash proxy,
-      # or leave it unset on a cloud VM that reaches v2ex.com directly.
     volumes:
+      # 状态库，丢了会重推历史提醒。
       - data:/data
-    extra_hosts:
-      # Lets the container reach a proxy running on the host.
-      # Podman users can use host.containers.internal instead.
-      - "host.docker.internal:host-gateway"
+    # 应用只写 /data，所以根文件系统只读、/tmp 用 tmpfs。
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    # 断网时每分钟一条 error，限制日志体积。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   data:
