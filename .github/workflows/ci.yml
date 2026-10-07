@@ -181,6 +181,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The published tag has no leading `v` (metadata-action's semver pattern
+      # strips it), so github.ref_name would print an image reference that 404s.
+      - name: Compute image tag
+        id: tag
+        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -189,5 +195,5 @@ jobs:
           # Tags like v0.2.0-rc1 get marked as pre-releases.
           prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
-            容器镜像：`ghcr.io/${{ github.repository }}:${{ github.ref_name }}`
+            容器镜像：`ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}`
             （linux/amd64 + linux/arm64，含 provenance 与 SBOM）
