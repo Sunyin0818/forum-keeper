@@ -7,8 +7,11 @@ services:
     image: ghcr.io/sunyin0818/forum-keeper:0.4.0
     container_name: forum-keeper
     restart: unless-stopped
+    # raw：cookie 值里含 `$`，默认会被 compose 当变量插值静默吞掉。
+    # 用 raw 后可以整行粘贴浏览器 cookie，不必手工转义 `$$`。
     env_file:
-      - .env
+      - path: .env
+        format: raw
     environment:
       STATE_PATH: /data/state.db
       # 影响签到调度与卡片/日志时间戳；docker 默认 UTC。
