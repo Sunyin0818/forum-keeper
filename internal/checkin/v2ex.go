@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"strings"
@@ -51,15 +52,50 @@ type V2EXSite struct {
 
 // NewV2EXSite builds a V2EX signer. cookie is the full Cookie header value,
 // normally "A2=..."; accounts with 2FA enabled must include A2O as well.
+//
+// The cookie is loaded into a jar so everyday cookies V2EX sets while browsing
+// (PB3_SESSION in particular) are carried into the claim request, as a browser
+// would. A claim issued with a bare A2 has been observed to 302 without
+// crediting, while the same account signed in via a browser works.
 func NewV2EXSite(cookie, baseURL string, timeout time.Duration) *V2EXSite {
 	if baseURL == "" {
 		baseURL = DefaultBaseURLV2EX
 	}
-	return &V2EXSite{
+	s := &V2EXSite{
 		baseURL: trimBaseURL(baseURL),
 		cookie:  strings.TrimSpace(cookie),
 		hc:      newHTTPClient(timeout),
 	}
+	if s.cookie != "" {
+		if u, err := url.Parse(s.baseURL); err == nil {
+			jar, _ := cookiejar.New(nil)
+			jar.SetCookies(u, parseCookieHeader(s.cookie))
+			s.hc.Jar = jar
+		}
+	}
+	return s
+}
+
+// parseCookieHeader turns a Cookie request header into cookies, stripping the
+// surrounding quotes V2EX uses around its signed values.
+func parseCookieHeader(header string) []*http.Cookie {
+	var out []*http.Cookie
+	for _, part := range strings.Split(header, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out = append(out, &http.Cookie{Name: name, Value: strings.Trim(strings.TrimSpace(value), `"`)})
+	}
+	return out
 }
 
 // Name implements Site.
@@ -180,7 +216,19 @@ func (s *V2EXSite) get(ctx context.Context, rawURL string) (body, finalURL strin
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 		req.Header.Set("Referer", s.baseURL+"/mission/daily")
-		if s.cookie != "" {
+		// Match a top-level browser navigation: V2EX rejected a claim that only
+		// carried A2/A2O, and these hints are cheap to mirror.
+		req.Header.Set("Upgrade-Insecure-Requests", "1")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-User", "?1")
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("sec-ch-ua", `"Chromium";v="137", "Not/A)Brand";v="24"`)
+		req.Header.Set("sec-ch-ua-mobile", "?0")
+		req.Header.Set("sec-ch-ua-platform", `"macOS"`)
+		// The jar already carries the configured cookies once seeded; fall back
+		// to the raw header only when it could not be built.
+		if s.hc.Jar == nil && s.cookie != "" {
 			req.Header.Set("Cookie", s.cookie)
 		}
 		return req, nil

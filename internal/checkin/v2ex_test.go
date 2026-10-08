@@ -326,3 +326,30 @@ func TestV2EXSiteSendsCookie(t *testing.T) {
 		t.Fatalf("Cookie header = %q", got)
 	}
 }
+
+// TestV2EXSiteCarriesSessionCookieToRedeem: V2EX sets PB3_SESSION on the daily
+// page; a browser sends it back on the claim navigation, so the client must too.
+func TestV2EXSiteCarriesSessionCookieToRedeem(t *testing.T) {
+	var redeemCookie string
+	claimed := false
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/mission/daily" && !claimed:
+			http.SetCookie(w, &http.Cookie{Name: "PB3_SESSION", Value: "session-abc"})
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=1">领取</a>`))
+		case r.URL.Path == "/mission/daily/redeem":
+			redeemCookie = r.Header.Get("Cookie")
+			claimed = true
+			w.Write([]byte(`<html>已成功领取每日登录奖励 3 铜币</html>`))
+		case r.URL.Path == "/mission/daily":
+			w.Write([]byte(`<html>每日登录奖励已领取</html>`))
+		default:
+			w.Write([]byte(`<html></html>`))
+		}
+	})
+
+	site.SignIn(context.Background())
+	if !strings.Contains(redeemCookie, "PB3_SESSION=session-abc") {
+		t.Fatalf("redeem Cookie = %q, want PB3_SESSION carried from the daily page", redeemCookie)
+	}
+}

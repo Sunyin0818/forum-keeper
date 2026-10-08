@@ -28,9 +28,16 @@ https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx
 | `LIBRA_COOKIE` | **2libra 签到**用 | 见下方说明 |
 
 **V2EX_COOKIE**：登录 <https://www.v2ex.com/> 后按 `F12` → **Network** → 刷新 → 点任一
-`www.v2ex.com` 请求 → **Request Headers** 里的 `Cookie:` 整行，原样复制。
+`www.v2ex.com` 请求 → **Request Headers** 里的 `Cookie:` 整行，原样复制（`_ga`/`_gid`
+这类跟踪项可删，值里含 `$` 会让 compose 刷警告）。
 
-也可以 `F12` → **Application** → Cookies → 复制 `A2` 的值；开了 2FA 还要连 `A2O` 一起。
+最小集合是 `A2`、`A2O`（2FA 账号）和 **`PB3_SESSION`**。`A2` 单独就能浏览，但
+「领取每日登录奖励」还需要 `PB3_SESSION`（2026-10 观察：只带 `A2`/`A2O` 时
+`redeem` 返回 302 却不入账）：
+
+```
+V2EX_COOKIE=A2=...; A2O=...; PB3_SESSION=...
+```
 
 **LIBRA_COOKIE**：登录 <https://2libra.com/> 后 `F12` → **Network** → 任一请求 →
 请求头 `cookie`，取 `access_token=` 后面的值：
@@ -62,7 +69,7 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
 
 ```ini
 FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/...
-V2EX_COOKIE=A2=...
+V2EX_COOKIE=A2=...; A2O=...; PB3_SESSION=...
 LIBRA_COOKIE=access_token=...
 ```
 
@@ -86,7 +93,7 @@ LIBRA_COOKIE=access_token=...
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `V2EX_COOKIE` | 空 | V2EX 签到用（`A2=...`，2FA 加 `A2O`） |
+| `V2EX_COOKIE` | 空 | V2EX 签到用（`A2=...`，2FA 加 `A2O`，再加 `PB3_SESSION`） |
 | `LIBRA_COOKIE` | 空 | 2libra 签到用（`access_token=...` 或裸 token） |
 | `V2EX_TOKEN` | 空 | V2EX 提醒用；留空则只签到 |
 
@@ -189,10 +196,10 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
 | 飞书 `code=19021 sign match fail` | 开了签名校验但 `FEISHU_SECRET` 没填或填错 |
 | `dial tcp ... timeout` | V2EX 不可达。云端直连不该出现；本地看 shell 里的 `HTTPS_PROXY` 是否指向可用的代理 |
 | 签到卡片 `Cookie 已失效` | `V2EX_COOKIE` / `LIBRA_COOKIE` 过期。本地改完 `.env` 重启进程；云端 `docker compose up -d` |
-| 云端每次 `up` 刷一串 `WARN The "o16" variable is not set` | cookie 值里含 `$`（`_ga_*`、`FCNEC` 这类分析 cookie），被 Docker Compose 当成变量插值吃掉了。**功能不受影响** —— 认证字段 `A2`/`A2O`/`access_token` 不含 `$`。把 cookie 精简成只留 `A2=...; A2O=...` 即可消除 |
+| 云端每次 `up` 刷一串 `WARN The "o16" variable is not set` | cookie 值里含 `$`（`_ga_*`、`FCNEC` 这类分析 cookie），被 Docker Compose 当成变量插值吃掉了。**功能不受影响** —— 认证字段 `A2`/`A2O`/`PB3_SESSION`/`access_token` 不含 `$`。把 cookie 精简成只留 `A2=...; A2O=...; PB3_SESSION=...` 即可消除 |
 | 云端 `pull access denied` | 服务器在拉一个不存在的镜像；确认 `compose.yaml` 的 `image:` 是 `ghcr.io/sunyin0818/forum-keeper:<版本>` |
 | 签到卡片 `未找到签到 token` | V2EX 未登录（Cookie 不全，2FA 缺 `A2O`），或页面结构变了 |
-| 签到卡片 `签到未生效` | V2EX 的 `redeem` 返回 302 但没入账（2026-10 起观察到的服务端行为），签到页仍显示「领取」、`/balance` 没有当天流水。稍后手动重跑 `--checkin`，或等 V2EX 修复 |
+| 签到卡片 `签到未生效` | V2EX 的 `redeem` 返回 302 但没入账。最常见原因是 `V2EX_COOKIE` 缺 `PB3_SESSION`（只带 `A2`/`A2O`）；补齐后重试。 |
 | 签到成功但群里没卡片，日志 `code=11232 frequency limited` | 飞书对 webhook 限流。重启会补发；长期出现可把 `CHECKIN_TIME` 错开群内其他机器人的推送时间 |
 | 一直没有提醒推送 | 正常：首次启动 `V2EX_FIRST_RUN=skip` 只记录不推送；无新消息时 info 不打印日志。用 `LOG_LEVEL=debug` 确认 |
 | 签到时间不对 | 容器 `TZ` 不对，`CHECKIN_TIME` 按它解释 |
