@@ -17,6 +17,7 @@ Endpoints:
 
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATE = {"polls": 0, "hooks": [], "deleted": [], "mission_claimed": False}
@@ -109,7 +110,8 @@ class Handler(BaseHTTPRequestHandler):
                 '<div id="money"><a href="/balance">29 '
                 '<img src="/static/img/silver@2x.png" alt="S" /> 77 '
                 '<img src="/static/img/bronze@2x.png" alt="B" /></a></div>'
-                '<span class="gray">20261007 的每日登录奖励 42 铜币</span>'
+                '<span class="gray">%s 的每日登录奖励 42 铜币</span>'
+                % time.strftime("%Y%m%d")
             )
         if path == "/api/v2/member":
             return self._json({"result": {"id": 1, "username": "tester"}})

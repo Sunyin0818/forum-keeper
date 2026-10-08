@@ -2,6 +2,7 @@ package checkin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,8 +129,8 @@ func TestV2EXSiteRewardFallsBackToLedger(t *testing.T) {
 		case r.URL.Path == "/mission/daily":
 			w.Write([]byte(`<html>每日登录奖励已领取</html>`))
 		case r.URL.Path == "/balance":
-			w.Write([]byte(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 77 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>
-				<tr><td class="d"><span class="gray">20261007 的每日登录奖励 8 铜币</span></td></tr>`))
+			w.Write([]byte(fmt.Sprintf(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 77 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>
+				<tr><td class="d"><span class="gray">%s 的每日登录奖励 8 铜币</span></td></tr>`, time.Now().Format("20060102"))))
 		default:
 			http.NotFound(w, r)
 		}
@@ -154,8 +155,8 @@ func TestV2EXSiteAlreadySignedReportsLedgerReward(t *testing.T) {
 		case "/mission/daily":
 			w.Write([]byte(`<html>每日登录奖励已领取</html>`))
 		case "/balance":
-			w.Write([]byte(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 77 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>
-				<span class="gray">20261007 的每日登录奖励 8 铜币</span>`))
+			w.Write([]byte(fmt.Sprintf(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 77 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>
+				<span class="gray">%s 的每日登录奖励 8 铜币</span>`, time.Now().Format("20060102"))))
 		default:
 			http.NotFound(w, r)
 		}
@@ -213,15 +214,82 @@ func TestParseCoinBalance(t *testing.T) {
 	}
 }
 
-func TestParseLedgerReward(t *testing.T) {
-	page := `<tr><td class="d">每日登录奖励</td><td class="d"><span class="gray">20261007 的每日登录奖励 8 铜币</span></td></tr>
-	<tr><td class="d">每日登录奖励</td><td class="d"><span class="gray">20261006 的每日登录奖励 15 铜币</span></td></tr>`
+func TestParseTodayLedgerReward(t *testing.T) {
+	today := time.Now().Format("20060102")
+	yesterday := time.Now().AddDate(0, 0, -1).Format("20060102")
+	page := fmt.Sprintf(`<tr><td class="d">每日登录奖励</td><td class="d"><span class="gray">%s 的每日登录奖励 8 铜币</span></td></tr>
+	<tr><td class="d">每日登录奖励</td><td class="d"><span class="gray">%s 的每日登录奖励 15 铜币</span></td></tr>`, today, yesterday)
 
-	if got := parseLedgerReward(page); got != "获得 8 铜币" {
-		t.Fatalf("parseLedgerReward = %q, want the newest row", got)
+	if got := parseTodayLedgerReward(page, time.Now()); got != "获得 8 铜币" {
+		t.Fatalf("parseTodayLedgerReward = %q, want today's row", got)
 	}
-	if got := parseLedgerReward("<html>no ledger here</html>"); got != "" {
-		t.Fatalf("parseLedgerReward = %q, want empty", got)
+	// A ledger holding only older rows must not be read as today's reward -
+	// otherwise a failed claim reports yesterday's amount as today's.
+	stale := fmt.Sprintf(`<span class="gray">%s 的每日登录奖励 15 铜币</span>`, yesterday)
+	if got := parseTodayLedgerReward(stale, time.Now()); got != "" {
+		t.Fatalf("parseTodayLedgerReward = %q, want empty for a stale ledger", got)
+	}
+	if got := parseTodayLedgerReward("<html>no ledger here</html>", time.Now()); got != "" {
+		t.Fatalf("parseTodayLedgerReward = %q, want empty", got)
+	}
+}
+
+// TestV2EXSiteUncreditedRedeemFails covers the observed 2026-10 behaviour: the
+// redeem endpoint answers 302 but the daily page stays claimable and no reward
+// lands. The card must not report a success that did not happen.
+func TestV2EXSiteUncreditedRedeemFails(t *testing.T) {
+	yesterday := time.Now().AddDate(0, 0, -1).Format("20060102")
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			// Still unclaimed: the redeem did not take.
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=98765">领取</a>`))
+		case "/mission/daily/redeem":
+			w.Write([]byte(`<html>每日登录奖励 20261008</html>`))
+		case "/balance":
+			w.Write([]byte(fmt.Sprintf(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 77 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>
+				<span class="gray">%s 的每日登录奖励 8 铜币</span>`, yesterday)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("an uncredited claim must fail, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "未生效") {
+		t.Fatalf("detail should say the claim did not land: %q", res.Detail)
+	}
+	if strings.Contains(res.Detail, "获得 8 铜币") {
+		t.Fatalf("yesterday's reward must not be shown as today's: %q", res.Detail)
+	}
+}
+
+// TestV2EXSiteLedgerConfirmsUncreditedPage: even when the daily page does not
+// flip, a today-dated ledger row proves the claim landed.
+func TestV2EXSiteLedgerConfirmsUncreditedPage(t *testing.T) {
+	today := time.Now().Format("20060102")
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=98765">领取</a>`))
+		case "/mission/daily/redeem":
+			w.Write([]byte(`<html>每日登录奖励 20261008</html>`))
+		case "/balance":
+			w.Write([]byte(fmt.Sprintf(`<div id="money"><a href="/balance">29 <img src="/static/img/silver@2x.png" alt="S" /> 85 <img src="/static/img/bronze@2x.png" alt="B" /></a></div>
+				<span class="gray">%s 的每日登录奖励 8 铜币</span>`, today)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "获得 8 铜币") {
+		t.Fatalf("reward should come from the ledger: %q", res.Detail)
 	}
 }
 

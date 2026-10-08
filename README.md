@@ -176,6 +176,10 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
   「每日登录奖励 N 铜币」流水（签到页 flash 抓不到金额时的兜底，已签过也能显示
   今天领了多少）；2libra 由签到接口直接返回，已签过（接口返回 `coins=0`）时再读
   `/api/coins/today-transaction`（即 <https://2libra.com/coins> 的数据源）补上当天金币。
+- **不误报**：V2EX 的 `redeem` 接口有时返回 302 却一分不入账（2026-10 观察）。
+  所以只有拿到证据——签到页变成「已领取」或 `/balance` 出现**当天日期**的奖励流水
+  ——才算成功，否则卡片如实报失败并说明原因；流水也只认当天日期，不会拿昨天的
+  奖励冒充今天。
 
 ## 常见问题
 
@@ -188,6 +192,7 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
 | 云端每次 `up` 刷一串 `WARN The "o16" variable is not set` | cookie 值里含 `$`（`_ga_*`、`FCNEC` 这类分析 cookie），被 Docker Compose 当成变量插值吃掉了。**功能不受影响** —— 认证字段 `A2`/`A2O`/`access_token` 不含 `$`。把 cookie 精简成只留 `A2=...; A2O=...` 即可消除 |
 | 云端 `pull access denied` | 服务器在拉一个不存在的镜像；确认 `compose.yaml` 的 `image:` 是 `ghcr.io/sunyin0818/forum-keeper:<版本>` |
 | 签到卡片 `未找到签到 token` | V2EX 未登录（Cookie 不全，2FA 缺 `A2O`），或页面结构变了 |
+| 签到卡片 `签到未生效` | V2EX 的 `redeem` 返回 302 但没入账（2026-10 起观察到的服务端行为），签到页仍显示「领取」、`/balance` 没有当天流水。稍后手动重跑 `--checkin`，或等 V2EX 修复 |
 | 签到成功但群里没卡片，日志 `code=11232 frequency limited` | 飞书对 webhook 限流。重启会补发；长期出现可把 `CHECKIN_TIME` 错开群内其他机器人的推送时间 |
 | 一直没有提醒推送 | 正常：首次启动 `V2EX_FIRST_RUN=skip` 只记录不推送；无新消息时 info 不打印日志。用 `LOG_LEVEL=debug` 确认 |
 | 签到时间不对 | 容器 `TZ` 不对，`CHECKIN_TIME` 按它解释 |
