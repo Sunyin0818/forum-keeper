@@ -174,7 +174,8 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
   卡片而重复签到。卡片最终仍未发出就不记为「今天已签」，重启会补发。
 - **带余额**：V2EX 签到后额外读 `/balance`，一次请求同时拿到当前余额和当天
   「每日登录奖励 N 铜币」流水（签到页 flash 抓不到金额时的兜底，已签过也能显示
-  今天领了多少）；2libra 由签到接口直接返回。
+  今天领了多少）；2libra 由签到接口直接返回，已签过（接口返回 `coins=0`）时再读
+  `/api/coins/today-transaction`（即 <https://2libra.com/coins> 的数据源）补上当天金币。
 
 ## 常见问题
 

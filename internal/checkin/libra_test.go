@@ -11,7 +11,22 @@ import (
 
 func newLibraTestSite(t *testing.T, credential string, handler http.HandlerFunc) *LibraSite {
 	t.Helper()
-	srv := httptest.NewServer(handler)
+	// Default ledger: today has no check-in entry. Tests that need one use
+	// newLibraTestSiteWithLedger.
+	return newLibraTestSiteWithLedger(t, credential, handler, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"c":0,"m":"请求成功","d":[]}`))
+	})
+}
+
+func newLibraTestSiteWithLedger(t *testing.T, credential string, sign, ledger http.HandlerFunc) *LibraSite {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == libraLedgerPath {
+			ledger(w, r)
+			return
+		}
+		sign(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	return NewLibraSite(credential, srv.URL, 5*time.Second)
 }
@@ -160,6 +175,75 @@ func TestLibraSiteOKFalseIsFailure(t *testing.T) {
 	res := site.SignIn(context.Background())
 	if res.OK() {
 		t.Fatalf("ok=false must fail, got %+v", res)
+	}
+}
+
+// TestLibraSiteAlreadySignedUsesLedger covers the reason for the /coins ledger
+// fetch: on an already-signed day the sign API reports coins=0, so the amount
+// actually paid has to come from /api/coins/today-transaction.
+func TestLibraSiteAlreadySignedUsesLedger(t *testing.T) {
+	site := newLibraTestSiteWithLedger(t, "access_token=jwt",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"c":200,"m":"请求成功","d":{"ok":true,"alreadySigned":true,"streak":5,"coins":0,"balance":134444}}`))
+		},
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				t.Errorf("ledger method = %s, want GET", r.Method)
+			}
+			w.Write([]byte(`{"c":0,"m":"请求成功","d":[{"id":1,"amount":110,"reason":"checkin"},{"id":2,"amount":-20,"reason":"comment"}]}`))
+		})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusAlready || !res.OK() {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if !strings.Contains(res.Detail, "+110 金币") {
+		t.Fatalf("detail should carry today's check-in coins from the ledger: %q", res.Detail)
+	}
+	if strings.Contains(res.Detail, "-20") {
+		t.Fatalf("detail should ignore non-check-in entries: %q", res.Detail)
+	}
+}
+
+// TestLibraSiteFreshSignSkipsLedger: when the sign response already names the
+// coins, no extra request is needed.
+func TestLibraSiteFreshSignSkipsLedger(t *testing.T) {
+	var ledgerCalls int
+	site := newLibraTestSiteWithLedger(t, "access_token=jwt",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"c":200,"m":"请求成功","d":{"ok":true,"alreadySigned":false,"streak":6,"coins":2,"balance":134446}}`))
+		},
+		func(w http.ResponseWriter, r *http.Request) {
+			ledgerCalls++
+			w.Write([]byte(`{"c":0,"m":"请求成功","d":[]}`))
+		})
+
+	res := site.SignIn(context.Background())
+	if !strings.Contains(res.Detail, "+2 金币") {
+		t.Fatalf("detail should carry the sign response coins: %q", res.Detail)
+	}
+	if ledgerCalls != 0 {
+		t.Fatalf("ledger should not be fetched when the sign response has coins; calls = %d", ledgerCalls)
+	}
+}
+
+// TestLibraSiteLedgerFailureIsBestEffort: a broken ledger must not turn a good
+// sign-in into a failure.
+func TestLibraSiteLedgerFailureIsBestEffort(t *testing.T) {
+	site := newLibraTestSiteWithLedger(t, "access_token=jwt",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"c":200,"m":"请求成功","d":{"ok":true,"alreadySigned":true,"streak":5,"coins":0,"balance":134444}}`))
+		},
+		func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+
+	res := site.SignIn(context.Background())
+	if !res.OK() {
+		t.Fatalf("ledger failure must not fail the sign-in, got %+v", res)
+	}
+	if strings.Contains(res.Detail, "金币") {
+		t.Fatalf("no coins expected, got %q", res.Detail)
 	}
 }
 

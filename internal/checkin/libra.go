@@ -15,6 +15,10 @@ import (
 // DefaultBaseURLLibra is the 2libra forum origin.
 const DefaultBaseURLLibra = "https://2libra.com"
 
+// libraLedgerPath is the API behind https://2libra.com/coins: the day's coin
+// transactions, including the check-in reward.
+const libraLedgerPath = "/api/coins/today-transaction"
+
 var (
 	// checkResultRe extracts the playful "签到勤勉检定" line the site returns.
 	checkResultRe = regexp.MustCompile(`签到勤勉检定[^。]*。`)
@@ -90,6 +94,15 @@ func (s *LibraSite) SignIn(ctx context.Context) Result {
 		if !data.OK {
 			return failure(s.Name(), firstNonEmpty(stripTags(env.M), "签到失败"))
 		}
+		// The sign endpoint only reports `coins` on a fresh sign-in; when the
+		// day was already signed it sends 0. Read today's ledger so an
+		// "already signed" run still shows what today earned - the same trick
+		// the V2EX site uses for the /balance reward line.
+		if data.Coins <= 0 {
+			if coins, ok := s.todayCheckinCoins(ctx); ok {
+				data.Coins = coins
+			}
+		}
 		if data.AlreadySigned {
 			return Result{Site: s.Name(), Status: StatusAlready, Detail: libraDetail("今日已签过", data), At: time.Now()}
 		}
@@ -97,28 +110,67 @@ func (s *LibraSite) SignIn(ctx context.Context) Result {
 	}
 
 	// Fallback for non-JSON bodies or a changed shape.
+	var res Result
 	switch {
 	case strings.Contains(text, "已经签到") || strings.Contains(text, "已签到"):
-		return Result{Site: s.Name(), Status: StatusAlready, Detail: firstNonEmpty(checkResult(text), "今日已签过"), At: time.Now()}
+		res = Result{Site: s.Name(), Status: StatusAlready, Detail: firstNonEmpty(checkResult(text), "今日已签过"), At: time.Now()}
 	case env.C == http.StatusCreated,
 		status == http.StatusCreated,
 		strings.Contains(text, "签到成功"),
 		strings.Contains(text, "签到勤勉检定"):
-		return Result{Site: s.Name(), Status: StatusSuccess, Detail: firstNonEmpty(checkResult(text), "签到成功"), At: time.Now()}
+		res = Result{Site: s.Name(), Status: StatusSuccess, Detail: firstNonEmpty(checkResult(text), "签到成功"), At: time.Now()}
 	case (status == http.StatusOK || env.C == http.StatusOK) &&
 		!containsAny(text, "失败", "错误", "异常", "无效", "未登录", "Unauthorized") &&
 		strings.Contains(text, "签到"):
 		// Anything that talks about 签到 without a failure word.
-		return Result{Site: s.Name(), Status: StatusSuccess, Detail: firstNonEmpty(checkResult(text), "签到成功"), At: time.Now()}
+		res = Result{Site: s.Name(), Status: StatusSuccess, Detail: firstNonEmpty(checkResult(text), "签到成功"), At: time.Now()}
 	default:
 		return failure(s.Name(), libraFailureDetail(status, text))
 	}
+	if coins, ok := s.todayCheckinCoins(ctx); ok && coins > 0 {
+		res.Detail = withReward(res.Detail, fmt.Sprintf("%d 金币", coins))
+	}
+	return res
+}
+
+// todayCheckinCoins reads the day's coin ledger (/api/coins/today-transaction,
+// the data behind https://2libra.com/coins) and returns the amount today's
+// check-in credited. It reports false when the request fails or the day has no
+// check-in entry. Best-effort: callers only use it to enrich the card.
+func (s *LibraSite) todayCheckinCoins(ctx context.Context) (int, bool) {
+	body, status, err := s.get(ctx, s.baseURL+libraLedgerPath)
+	if err != nil || status != http.StatusOK {
+		return 0, false
+	}
+	var env struct {
+		D []libraCoinTx `json:"d"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		return 0, false
+	}
+	for _, tx := range env.D {
+		if tx.Reason == "checkin" {
+			return tx.Amount, true
+		}
+	}
+	return 0, false
 }
 
 // post sends the check-in request with whichever credential is configured.
 func (s *LibraSite) post(ctx context.Context, rawURL string) (body string, status int, err error) {
+	return s.do(ctx, http.MethodPost, rawURL)
+}
+
+// get performs a GET on the API, e.g. the coin ledger behind /coins.
+func (s *LibraSite) get(ctx context.Context, rawURL string) (body string, status int, err error) {
+	return s.do(ctx, http.MethodGet, rawURL)
+}
+
+// do sends one authenticated API request. Cloudflare sits in front of the
+// site, so the browser-like headers matter for both verbs.
+func (s *LibraSite) do(ctx context.Context, method, rawURL string) (body string, status int, err error) {
 	resp, err := doWithRetry(ctx, s.hc, func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, nil)
+		req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -162,6 +214,13 @@ type libraData struct {
 	Coins         int  `json:"coins"`
 	Balance       int  `json:"balance"`
 	CheckData     any  `json:"checkData"`
+}
+
+// libraCoinTx is one row of /api/coins/today-transaction. Today's check-in
+// appears as {"amount":110,"reason":"checkin",...}.
+type libraCoinTx struct {
+	Amount int    `json:"amount"`
+	Reason string `json:"reason"`
 }
 
 // parseLibra extracts the envelope and a searchable text rendering of it.

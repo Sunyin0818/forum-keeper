@@ -113,6 +113,11 @@ class Handler(BaseHTTPRequestHandler):
             )
         if path == "/api/v2/member":
             return self._json({"result": {"id": 1, "username": "tester"}})
+        # 2libra coin ledger behind https://2libra.com/coins (check-in reward).
+        if path == "/api/coins/today-transaction":
+            return self._json(
+                {"c": 0, "m": "请求成功", "d": [{"amount": 110, "reason": "checkin"}]}
+            )
         if path == "/api/v2/notifications":
             STATE["polls"] += 1
             items = current_notifications(STATE["polls"])

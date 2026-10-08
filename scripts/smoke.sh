@@ -94,6 +94,7 @@ assert "V2EX" in checkin and "2libra" in checkin, checkin
 assert "42 铜币" in checkin, checkin
 assert "余额 29 银币 77 铜币" in checkin, checkin
 assert "签到勤勉检定" in checkin, checkin
+assert "110 金币" in checkin, checkin
 
 # Real V2EX notifications carry an HTML fragment in `text`. None of that markup
 # may reach the card.
