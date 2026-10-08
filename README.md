@@ -169,6 +169,9 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
 - **不重复**：每天只签一次、只发一张卡片，调度到点时也会先查状态库。
 - **互不影响**：一个站点失败不挡另一个，卡片逐条列明。
 - **自动重试**：网络错误 / 429 / 5xx 重试 3 次（2s、4s）。
+- **卡片不丢**：飞书对 webhook 限流（`code=11232 frequency limited`）时按限流退避重试
+  （客户端 10s、20s、30s），投递失败再隔 1、2 分钟重发卡片；签到只做一次，不会因重发
+  卡片而重复签到。卡片最终仍未发出就不记为「今天已签」，重启会补发。
 - **带余额**：V2EX 签到后额外读 `/balance`，一次请求同时拿到当前余额和当天
   「每日登录奖励 N 铜币」流水（签到页 flash 抓不到金额时的兜底，已签过也能显示
   今天领了多少）；2libra 由签到接口直接返回。
@@ -184,6 +187,7 @@ go build -o bin/forum-keeper ./cmd/forum-keeper
 | 云端每次 `up` 刷一串 `WARN The "o16" variable is not set` | cookie 值里含 `$`（`_ga_*`、`FCNEC` 这类分析 cookie），被 Docker Compose 当成变量插值吃掉了。**功能不受影响** —— 认证字段 `A2`/`A2O`/`access_token` 不含 `$`。把 cookie 精简成只留 `A2=...; A2O=...` 即可消除 |
 | 云端 `pull access denied` | 服务器在拉一个不存在的镜像；确认 `compose.yaml` 的 `image:` 是 `ghcr.io/sunyin0818/forum-keeper:<版本>` |
 | 签到卡片 `未找到签到 token` | V2EX 未登录（Cookie 不全，2FA 缺 `A2O`），或页面结构变了 |
+| 签到成功但群里没卡片，日志 `code=11232 frequency limited` | 飞书对 webhook 限流。重启会补发；长期出现可把 `CHECKIN_TIME` 错开群内其他机器人的推送时间 |
 | 一直没有提醒推送 | 正常：首次启动 `V2EX_FIRST_RUN=skip` 只记录不推送；无新消息时 info 不打印日志。用 `LOG_LEVEL=debug` 确认 |
 | 签到时间不对 | 容器 `TZ` 不对，`CHECKIN_TIME` 按它解释 |
 | 不想用签到 | 清空 `V2EX_COOKIE` 和 `LIBRA_COOKIE`（凭据存在即启用） |

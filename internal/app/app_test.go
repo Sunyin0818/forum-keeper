@@ -119,6 +119,11 @@ type fakeNotifier struct {
 	startups [][]string
 	checkins [][]feishu.CheckinEntry
 	err      error
+
+	// checkinCalls counts every Checkin attempt, including rejected ones.
+	checkinCalls int
+	// checkinFail rejects the first N attempts before succeeding.
+	checkinFail int
 }
 
 func (n *fakeNotifier) Notify(_ context.Context, items []v2ex.Notification) error {
@@ -147,8 +152,12 @@ func (n *fakeNotifier) Startup(_ context.Context, lines []string) error {
 }
 
 func (n *fakeNotifier) Checkin(_ context.Context, entries []feishu.CheckinEntry) error {
+	n.checkinCalls++
 	if n.err != nil {
 		return n.err
+	}
+	if n.checkinCalls <= n.checkinFail {
+		return errors.New("check-in card rejected")
 	}
 	n.checkins = append(n.checkins, entries)
 	return nil
@@ -534,6 +543,14 @@ type fakeSite struct {
 	calls  int
 }
 
+// shrinkCheckinCardRetry removes the real retry delays so tests stay fast.
+func shrinkCheckinCardRetry(t *testing.T) {
+	t.Helper()
+	oldAttempts, oldBase := checkinCardAttempts, checkinCardRetryBase
+	checkinCardAttempts, checkinCardRetryBase = 3, time.Millisecond
+	t.Cleanup(func() { checkinCardAttempts, checkinCardRetryBase = oldAttempts, oldBase })
+}
+
 func (s *fakeSite) Name() string { return s.name }
 
 func (s *fakeSite) SignIn(context.Context) checkin.Result {
@@ -575,6 +592,8 @@ func TestRunCheckinsReportsEverySite(t *testing.T) {
 }
 
 func TestRunCheckinsRecordsNothingWhenCardFails(t *testing.T) {
+	shrinkCheckinCardRetry(t)
+
 	st := newFakeState()
 	n := &fakeNotifier{err: errors.New("webhook down")}
 	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
@@ -583,8 +602,39 @@ func TestRunCheckinsRecordsNothingWhenCardFails(t *testing.T) {
 	if err := a.RunCheckins(context.Background()); err == nil {
 		t.Fatal("expected a send error")
 	}
+	if n.checkinCalls != checkinCardAttempts {
+		t.Fatalf("every attempt should be made, calls=%d want=%d", n.checkinCalls, checkinCardAttempts)
+	}
 	if !st.checkin.IsZero() {
 		t.Fatal("a failed card must not be recorded as done")
+	}
+}
+
+// A rejected card must be retried without signing in again: the sign-in already
+// happened, and a second card describing "already signed in" is misleading.
+func TestRunCheckinsRetriesCardWithoutResigning(t *testing.T) {
+	shrinkCheckinCardRetry(t)
+
+	st := newFakeState()
+	n := &fakeNotifier{checkinFail: 1}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+	s := &fakeSite{name: "V2EX", result: checkin.Result{Status: checkin.StatusSuccess}}
+	a.SetCheckinSites([]checkin.Site{s})
+
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("RunCheckins: %v", err)
+	}
+	if s.calls != 1 {
+		t.Fatalf("the site must sign in exactly once, calls=%d", s.calls)
+	}
+	if n.checkinCalls != 2 {
+		t.Fatalf("expected one retry, calls=%d", n.checkinCalls)
+	}
+	if len(n.checkins) != 1 {
+		t.Fatalf("expected one delivered card, got %d", len(n.checkins))
+	}
+	if st.checkin.IsZero() {
+		t.Fatal("check-in time should be recorded after the retry succeeds")
 	}
 }
 

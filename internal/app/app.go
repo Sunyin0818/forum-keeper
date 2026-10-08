@@ -22,6 +22,15 @@ const (
 	notificationsPageSize = 20
 	alertThreshold        = 5
 	alertMinInterval      = 30 * time.Minute
+	// checkinRunTimeout bounds one scheduled run including card retries.
+	checkinRunTimeout = 10 * time.Minute
+)
+
+// checkinCardAttempts and checkinCardRetryBase bound the retry of the check-in
+// card only. Variables so tests can shrink the delays.
+var (
+	checkinCardAttempts  = 3
+	checkinCardRetryBase = time.Minute
 )
 
 // Fetcher is the read/write surface of the V2EX API used by the app.
@@ -319,13 +328,39 @@ func (a *App) RunCheckins(ctx context.Context) error {
 	for _, r := range results {
 		entries = append(entries, feishu.CheckinEntry{Site: r.Site, OK: r.OK(), Detail: r.Detail})
 	}
-	if err := a.bot.Checkin(ctx, entries); err != nil {
-		return fmt.Errorf("send check-in card: %w", err)
+	return a.sendCheckinCard(ctx, entries)
+}
+
+// sendCheckinCard delivers the check-in card and retries only the delivery.
+//
+// The sign-in itself has already happened and every site reports a repeat as
+// "already signed in", but re-running the sign-in to resend the card would
+// waste a request and report a less useful result. A rejected card (Feishu
+// throttling, transient outage) must not silently cost the whole day's report.
+//
+// The day is only marked as done once the card is accepted, so a send that
+// never succeeds still lets CHECKIN_ON_START catch up after a restart.
+func (a *App) sendCheckinCard(ctx context.Context, entries []feishu.CheckinEntry) error {
+	var err error
+	for attempt := 1; attempt <= checkinCardAttempts; attempt++ {
+		if attempt > 1 {
+			delay := time.Duration(attempt-1) * checkinCardRetryBase
+			a.log.Info("retrying check-in card", "attempt", attempt, "in", delay.Round(time.Second).String())
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		if err = a.bot.Checkin(ctx, entries); err == nil {
+			if rerr := a.state.SetCheckin(time.Now()); rerr != nil {
+				a.log.Warn("could not record check-in time", "err", rerr)
+			}
+			return nil
+		}
+		a.log.Warn("check-in card rejected", "attempt", attempt, "err", err)
 	}
-	if err := a.state.SetCheckin(time.Now()); err != nil {
-		a.log.Warn("could not record check-in time", "err", err)
-	}
-	return nil
+	return fmt.Errorf("send check-in card: %w", err)
 }
 
 // maybeCheckinOnStart catches up at startup when CHECKIN_ON_START is enabled:
@@ -382,7 +417,7 @@ func (a *App) checkinLoop(ctx context.Context) {
 			continue
 		}
 
-		runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		runCtx, cancel := context.WithTimeout(ctx, checkinRunTimeout)
 		err := a.RunCheckins(runCtx)
 		cancel()
 		if err != nil {

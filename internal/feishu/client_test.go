@@ -105,6 +105,56 @@ func TestSendRetriesOnServerError(t *testing.T) {
 	}
 }
 
+// Feishu reports throttling as HTTP 200 with code 11232. Retrying instead of
+// dropping the message is the difference between a delayed card and a lost one.
+func TestSendRetriesOnFrequencyLimit(t *testing.T) {
+	oldBase, oldLimit := retryBase, rateLimitBase
+	retryBase, rateLimitBase = time.Millisecond, time.Millisecond
+	defer func() { retryBase, rateLimitBase = oldBase, oldLimit }()
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			_, _ = w.Write([]byte(`{"code":11232,"msg":"frequency limited"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"msg":"success"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "", 5*time.Second)
+	if err := c.SendText(context.Background(), "hi"); err != nil {
+		t.Fatalf("SendText should survive a throttled first attempt: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("expected 2 attempts, got %d", got)
+	}
+}
+
+// A permanent logical error (bad signature) must fail immediately rather than
+// burn the retry budget.
+func TestSendDoesNotRetryPermanentRejection(t *testing.T) {
+	old := retryBase
+	retryBase = time.Millisecond
+	defer func() { retryBase = old }()
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		_, _ = w.Write([]byte(`{"code":19001,"msg":"sign match fail"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "", 5*time.Second)
+	if err := c.SendText(context.Background(), "hi"); err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("permanent rejection must not be retried, attempts=%d", got)
+	}
+}
+
 // Feishu must be reached directly. If it inherited a proxy, every notification
 // would fail on hosts where the proxy cannot reach open.feishu.cn - and the
 // failure would look like a Feishu outage rather than a config error.
