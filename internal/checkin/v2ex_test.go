@@ -353,3 +353,55 @@ func TestV2EXSiteCarriesSessionCookieToRedeem(t *testing.T) {
 		t.Fatalf("redeem Cookie = %q, want PB3_SESSION carried from the daily page", redeemCookie)
 	}
 }
+
+// TestV2EXSiteBeforeWindowIsPending: V2EX rolls its mission day at 08:00 UTC+8.
+// Run before that, the page still carries the previous day and, when that day
+// was claimed, is indistinguishable from "today is done". It must defer rather
+// than report a success that would skip the claim opening at 08:00.
+func TestV2EXSiteBeforeWindowIsPending(t *testing.T) {
+	yesterday := time.Now().AddDate(0, 0, -1).Format("20060102")
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mission/daily" {
+			t.Errorf("a pending run must not touch %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(fmt.Sprintf(
+			`<html>每日登录奖励 v2ex:member:477522:%s 已连续登录 318 天 每日登录奖励已领取</html>`, yesterday)))
+	})
+
+	res := site.SignIn(context.Background())
+	if !res.Pending() {
+		t.Fatalf("status = %q, want pending (detail=%q)", res.Status, res.Detail)
+	}
+	if res.OK() {
+		t.Fatalf("pending must not count as ok: %+v", res)
+	}
+	if res.RetryAfter.IsZero() || !res.RetryAfter.After(time.Now()) {
+		t.Fatalf("RetryAfter = %v, want a future window", res.RetryAfter)
+	}
+}
+
+// TestV2EXSiteAlreadySignedOnCurrentMissionDay guards the other side of the
+// window check: once V2EX serves today's key, "已领取" stays a success.
+func TestV2EXSiteAlreadySignedOnCurrentMissionDay(t *testing.T) {
+	today := time.Now().Format("20060102")
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			w.Write([]byte(fmt.Sprintf(`<html>v2ex:member:477522:%s 每日登录奖励已领取</html>`, today)))
+		case "/balance":
+			w.Write([]byte(fmt.Sprintf(`<span class="gray">%s 的每日登录奖励 8 铜币</span>`, today)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusAlready {
+		t.Fatalf("status = %q, want already (detail=%q)", res.Status, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "获得 8 铜币") {
+		t.Fatalf("today's reward missing: %q", res.Detail)
+	}
+}

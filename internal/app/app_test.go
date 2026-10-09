@@ -744,3 +744,48 @@ func TestBuildCheckinSitesHonoursCredentials(t *testing.T) {
 		t.Fatalf("expected 2 sites, got %d", len(both))
 	}
 }
+
+// A pending site (V2EX before its 08:00 UTC+8 window) must not produce a card or
+// be recorded as done; the run is repeated at the window instead.
+func TestRunCheckinsDefersPendingSite(t *testing.T) {
+	st := newFakeState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+	retry := time.Now().Add(2 * time.Hour)
+	s := &fakeSite{name: "V2EX", result: checkin.Result{
+		Status:     checkin.StatusPending,
+		Detail:     "V2EX 当日奖励 08:00 后开放",
+		RetryAfter: retry,
+	}}
+	a.SetCheckinSites([]checkin.Site{s})
+
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("RunCheckins: %v", err)
+	}
+	if len(n.checkins) != 0 {
+		t.Fatalf("a pending run must not send a card, got %d", len(n.checkins))
+	}
+	if !st.checkin.IsZero() {
+		t.Fatal("a pending run must not be recorded as done")
+	}
+	if !a.retryAt.Equal(retry) {
+		t.Fatalf("retryAt = %v, want %v", a.retryAt, retry)
+	}
+}
+
+func TestPendingRetryPicksEarliestWindow(t *testing.T) {
+	early := time.Now().Add(time.Hour)
+	late := time.Now().Add(3 * time.Hour)
+
+	got := pendingRetry([]checkin.Result{
+		{Status: checkin.StatusSuccess},
+		{Status: checkin.StatusPending, RetryAfter: late},
+		{Status: checkin.StatusPending, RetryAfter: early},
+	})
+	if !got.Equal(early) {
+		t.Fatalf("pendingRetry = %v, want %v", got, early)
+	}
+	if got := pendingRetry([]checkin.Result{{Status: checkin.StatusAlready}}); !got.IsZero() {
+		t.Fatalf("pendingRetry = %v, want zero when nothing is pending", got)
+	}
+}

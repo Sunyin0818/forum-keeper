@@ -28,6 +28,12 @@ const (
 	// StatusAlready means the site reported today's sign-in was done earlier.
 	// Treated as a success: re-running must not be an error.
 	StatusAlready Status = "already"
+	// StatusPending means the site has nothing to claim yet. V2EX rolls its
+	// mission day at 08:00 UTC+8, so a run before then still sees the previous
+	// day's claim even though the local calendar has already moved on. This is
+	// not a success: recording the day as done here would skip the claim that
+	// opens at 08:00. The caller retries at RetryAfter instead.
+	StatusPending Status = "pending"
 	// StatusFailed means the credential was rejected or the request did not
 	// produce a confirmed sign-in.
 	StatusFailed Status = "failed"
@@ -42,12 +48,19 @@ type Result struct {
 	// plain_text, so it must not contain markup.
 	Detail string
 	At     time.Time
+	// RetryAfter is set on a pending result: the earliest moment the site can
+	// be asked again. Zero means no retry is scheduled.
+	RetryAfter time.Time
 }
 
 // OK reports whether the sign-in counts as a success.
 func (r Result) OK() bool {
 	return r.Status == StatusSuccess || r.Status == StatusAlready
 }
+
+// Pending reports whether the site's daily window has not opened yet, so the
+// run should be repeated later instead of being recorded as done.
+func (r Result) Pending() bool { return r.Status == StatusPending }
 
 // Site is one forum that can be checked in to.
 type Site interface {
@@ -93,8 +106,8 @@ func Run(ctx context.Context, log *slog.Logger, sites []Site) []Result {
 // UntilNext returns how long to wait before the next local hh:mm.
 //
 // hh:mm earlier than (or equal to) now rolls over to tomorrow, which makes the
-// loop restart-safe: a service that comes up at 10:00 waits until 06:00 the
-// next day instead of firing an immediate duplicate.
+// loop restart-safe: a service that comes up after its configured time waits
+// until the same time the next day instead of firing an immediate duplicate.
 func UntilNext(now time.Time, hour, minute int, loc *time.Location) time.Duration {
 	if loc == nil {
 		loc = time.Local

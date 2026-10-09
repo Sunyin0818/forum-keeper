@@ -35,6 +35,19 @@ var (
 	// claim page's flash message. The leading date is captured so a row from a
 	// previous day is never mistaken for today's.
 	ledgerRewardRe = regexp.MustCompile(`(\d{8})\s*的每日登录奖励\s*(\d+)\s*(铜币|银币|金币)`)
+	// missionDayRe captures the mission day key V2EX stamps into the daily page,
+	// e.g. "20261009" from "v2ex:member:477522:20261009". The mission day runs
+	// 08:00-08:00 UTC+8, so before 08:00 the key is still yesterday's date.
+	missionDayRe = regexp.MustCompile(`v2ex:member:\d+:(\d{8})`)
+)
+
+const (
+	// v2exWindowHour is when V2EX opens a new mission day: 08:00 UTC+8, i.e.
+	// 00:00 UTC. Nothing can be claimed before it.
+	v2exWindowHour = 8
+	// v2exRetryInterval backs off when the mission day has still not rolled over
+	// after its window (V2EX is sometimes late).
+	v2exRetryInterval = 30 * time.Minute
 )
 
 // V2EXSite claims the V2EX daily login bonus.
@@ -158,6 +171,20 @@ func (s *V2EXSite) signInOnce(ctx context.Context) (Result, string, bool) {
 		return failure(s.Name(), fmt.Sprintf("签到页返回 HTTP %d", status)), "", false
 	}
 
+	// Before 08:00 UTC+8 the page still carries the previous mission day and,
+	// when that day was already claimed, looks exactly like "today is done".
+	// Claiming then would target the wrong day, and reporting it as a success
+	// would mark the local day as finished - so wait for the window instead.
+	if day := missionDay(daily); day != "" && day != time.Now().Format("20060102") {
+		return Result{
+			Site:       s.Name(),
+			Status:     StatusPending,
+			Detail:     fmt.Sprintf("V2EX 当日奖励 08:00 后开放（当前任务日 %s）", day),
+			At:         time.Now(),
+			RetryAfter: nextV2EXWindow(time.Now()),
+		}, "", false
+	}
+
 	if strings.Contains(daily, "每日登录奖励已领取") {
 		return Result{
 			Site:   s.Name(),
@@ -269,6 +296,27 @@ func parseTodayLedgerReward(html string, now time.Time) string {
 		}
 	}
 	return ""
+}
+
+// missionDay returns the mission day key V2EX stamps into the daily page, e.g.
+// "20261009" from "v2ex:member:477522:20261009". It returns "" when the page
+// carries no key, in which case the caller keeps the previous behaviour.
+func missionDay(html string) string {
+	if m := missionDayRe.FindStringSubmatch(html); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// nextV2EXWindow returns when the current mission day may be claimed: 08:01
+// local on the same day, or a short backoff when that window has already
+// passed (V2EX rolls the day over late often enough to be worth another try).
+func nextV2EXWindow(now time.Time) time.Time {
+	w := time.Date(now.Year(), now.Month(), now.Day(), v2exWindowHour, 1, 0, 0, now.Location())
+	if w.After(now) {
+		return w
+	}
+	return now.Add(v2exRetryInterval)
 }
 
 // parseCoinBalance extracts "29 银币 69 铜币" from the balance widget.

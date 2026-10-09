@@ -16,8 +16,8 @@ func TestLoadCheckinDefaults(t *testing.T) {
 	if !cfg.CheckinOnStart {
 		t.Error("catch-up on start should default to true")
 	}
-	if cfg.CheckinHour != 6 || cfg.CheckinMinute != 0 {
-		t.Errorf("check-in time = %02d:%02d, want 06:00", cfg.CheckinHour, cfg.CheckinMinute)
+	if cfg.CheckinHour != 8 || cfg.CheckinMinute != 10 {
+		t.Errorf("check-in time = %02d:%02d, want 08:10", cfg.CheckinHour, cfg.CheckinMinute)
 	}
 	if cfg.CheckinLocation == nil {
 		t.Error("check-in location must be set (time.Local)")

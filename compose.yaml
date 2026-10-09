@@ -4,7 +4,7 @@ name: forum-keeper
 services:
   forum-keeper:
     # 钉版本，升级改这一行。
-    image: ghcr.io/sunyin0818/forum-keeper:0.5.2
+    image: ghcr.io/sunyin0818/forum-keeper:0.5.3
     container_name: forum-keeper
     restart: unless-stopped
     # raw：cookie 值里含 `$`，默认会被 compose 当变量插值静默吞掉。

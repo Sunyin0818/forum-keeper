@@ -24,8 +24,10 @@ const (
 	// 2libra forum origin, used by the check-in POST /api/sign.
 	DefaultLibraBaseURL = "https://2libra.com"
 
-	// DefaultDailyCheckinTime is the local time of the daily check-in run.
-	DefaultDailyCheckinTime = "06:00"
+	// DefaultDailyCheckinTime is the local time of the daily check-in run. It sits
+	// after 08:00 UTC+8 on purpose: V2EX opens its mission day at 08:00, so an
+	// earlier run can only ever see the previous day already claimed.
+	DefaultDailyCheckinTime = "08:10"
 )
 
 // Config is the fully resolved runtime configuration.

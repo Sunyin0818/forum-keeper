@@ -78,6 +78,11 @@ type App struct {
 	failures  int
 	lastAlert time.Time
 
+	// retryAt moves the next scheduled run to a pending site's window (V2EX
+	// opens its mission day at 08:00 UTC+8). It is only touched by the check-in
+	// path: written while starting up and inside the check-in loop goroutine.
+	retryAt time.Time
+
 	version string
 	member  *v2ex.Member
 	sites   []checkin.Site
@@ -324,11 +329,42 @@ func (a *App) RunCheckins(ctx context.Context) error {
 		return nil
 	}
 
+	// A pending site has nothing to claim yet: sending "已签过" now would record
+	// the day as done and skip the real claim. Defer the whole run - including
+	// the card - to the moment the window opens.
+	if retry := pendingRetry(results); !retry.IsZero() {
+		a.retryAt = retry
+		a.log.Info("check-in deferred until the site's daily window opens",
+			"at", retry.Format("2006-01-02 15:04:05"),
+			"in", time.Until(retry).Round(time.Second).String())
+		return nil
+	}
+	a.retryAt = time.Time{}
+
 	entries := make([]feishu.CheckinEntry, 0, len(results))
 	for _, r := range results {
 		entries = append(entries, feishu.CheckinEntry{Site: r.Site, OK: r.OK(), Detail: r.Detail})
 	}
 	return a.sendCheckinCard(ctx, entries)
+}
+
+// pendingRetry returns the earliest moment a pending site can be retried, or
+// the zero time when no site deferred.
+func pendingRetry(results []checkin.Result) time.Time {
+	var earliest time.Time
+	for _, r := range results {
+		if !r.Pending() {
+			continue
+		}
+		at := r.RetryAfter
+		if at.IsZero() {
+			at = time.Now().Add(30 * time.Minute)
+		}
+		if earliest.IsZero() || at.Before(earliest) {
+			earliest = at
+		}
+	}
+	return earliest
 }
 
 // sendCheckinCard delivers the check-in card and retries only the delivery.
@@ -396,11 +432,20 @@ func (a *App) checkedInToday() bool {
 func (a *App) checkinLoop(ctx context.Context) {
 	for {
 		now := time.Now()
-		delay := checkin.UntilNext(now, a.cfg.CheckinHour, a.cfg.CheckinMinute, a.checkinLoc())
-		next := now.Add(delay).In(a.checkinLoc())
-		a.log.Info("next check-in scheduled",
-			"at", next.Format("2006-01-02 15:04:05"),
-			"in", delay.Round(time.Second).String())
+		var delay time.Duration
+		if retry := a.retryAt; !retry.IsZero() && retry.After(now) {
+			delay = retry.Sub(now)
+			a.log.Info("check-in retry scheduled",
+				"at", retry.Format("2006-01-02 15:04:05"),
+				"in", delay.Round(time.Second).String())
+		} else {
+			a.retryAt = time.Time{}
+			delay = checkin.UntilNext(now, a.cfg.CheckinHour, a.cfg.CheckinMinute, a.checkinLoc())
+			next := now.Add(delay).In(a.checkinLoc())
+			a.log.Info("next check-in scheduled",
+				"at", next.Format("2006-01-02 15:04:05"),
+				"in", delay.Round(time.Second).String())
+		}
 
 		timer := time.NewTimer(delay)
 		select {
@@ -414,6 +459,7 @@ func (a *App) checkinLoop(ctx context.Context) {
 		// in; do not send a second card.
 		if a.checkedInToday() {
 			a.log.Info("scheduled check-in skipped: already ran today")
+			a.retryAt = time.Time{}
 			continue
 		}
 
