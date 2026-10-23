@@ -416,9 +416,9 @@ ssh server 'cd /opt/forum-keeper && docker compose pull && docker compose up -d'
 镜像发布在 GHCR，push `v*` tag 会依次：跑测试 → 构建并推送镜像 → **创建 GitHub Release**（自动生成 release notes）：
 
 ```bash
-git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
-# -> ghcr.io/sunyin0818/forum-keeper:0.2.0 / :0.2 / :latest（amd64 + arm64）
-# -> https://github.com/Sunyin0818/forum-keeper/releases/tag/v0.2.0
+git tag -a v0.6.0 -m "v0.6.0" && git push origin v0.6.0
+# -> ghcr.io/sunyin0818/forum-keeper:0.6.0 / :0.6 / :latest（amd64 + arm64）
+# -> https://github.com/Sunyin0818/forum-keeper/releases/tag/v0.6.0
 ```
 
 包默认 private，要跨机器拉取就在 GitHub → Packages 里改为 public，或 `docker login ghcr.io`。
