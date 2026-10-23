@@ -67,7 +67,16 @@ type Config struct {
 	StatePath              string
 	LogLevel               string
 
-	// --- 4. advanced (defaults are the public sites) ------------------------
+	// --- 4. PT sites (optional) ---------------------------------------------
+	// PTSitesFile points at a pt-sites.json file. When set, its sites are
+	// signed in daily and their inboxes are polled. Empty disables the feature.
+	PTSitesFile      string
+	PTPollInterval   time.Duration
+	PTFirstRun       string
+	PTCheckinRetries int
+	PTConcurrency    int
+
+	// --- 5. advanced (defaults are the public sites) ------------------------
 	V2EXBaseURL    string // V2EX API 2.0
 	V2EXWebBaseURL string // V2EX web, for the daily mission
 	LibraBaseURL   string // 2libra
@@ -85,6 +94,8 @@ func Load() (*Config, error) {
 		V2EXCookie:  envStr("V2EX_COOKIE", ""),
 		LibraCookie: envStr("LIBRA_COOKIE", ""),
 		V2EXToken:   envStr("V2EX_TOKEN", ""),
+		PTSitesFile: envStr("PT_SITES_FILE", ""),
+		PTFirstRun:  strings.ToLower(envStr("PT_FIRST_RUN", "skip")),
 
 		// 3. sensible defaults
 		FirstRun:    strings.ToLower(envStr("V2EX_FIRST_RUN", FirstRunSkip)),
@@ -102,6 +113,15 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if cfg.PollInterval, err = envDuration("V2EX_POLL_INTERVAL", 60*time.Second); err != nil {
+		return nil, err
+	}
+	if cfg.PTPollInterval, err = envDuration("PT_POLL_INTERVAL", 2*time.Hour); err != nil {
+		return nil, err
+	}
+	if cfg.PTCheckinRetries, err = envInt("PT_CHECKIN_RETRIES", 2); err != nil {
+		return nil, err
+	}
+	if cfg.PTConcurrency, err = envInt("PT_CONCURRENCY", 4); err != nil {
 		return nil, err
 	}
 	if cfg.MaxPages, err = envInt("V2EX_MAX_PAGES", 3); err != nil {
@@ -139,8 +159,8 @@ func (c *Config) validate() error {
 	// V2EX_TOKEN is optional: without it the service only runs the daily
 	// check-in. But something has to be configured, or the container would sit
 	// there doing nothing.
-	if c.V2EXToken == "" && c.V2EXCookie == "" && c.LibraCookie == "" {
-		return fmt.Errorf("config: nothing to do: set V2EX_TOKEN (reminders) and/or V2EX_COOKIE or LIBRA_COOKIE (check-in)")
+	if c.V2EXToken == "" && c.V2EXCookie == "" && c.LibraCookie == "" && c.PTSitesFile == "" {
+		return fmt.Errorf("config: nothing to do: set V2EX_TOKEN (reminders), V2EX_COOKIE/LIBRA_COOKIE (check-in) or PT_SITES_FILE")
 	}
 	if c.FeishuWebhook == "" {
 		return fmt.Errorf("config: FEISHU_WEBHOOK is required")
@@ -166,6 +186,20 @@ func (c *Config) validate() error {
 	}
 	if c.StatePath == "" {
 		return fmt.Errorf("config: STATE_PATH must not be empty")
+	}
+	if c.PTPollInterval < time.Minute {
+		return fmt.Errorf("config: PT_POLL_INTERVAL must be >= 1m, got %s", c.PTPollInterval)
+	}
+	if c.PTCheckinRetries < 0 || c.PTCheckinRetries > 10 {
+		return fmt.Errorf("config: PT_CHECKIN_RETRIES must be between 0 and 10, got %d", c.PTCheckinRetries)
+	}
+	if c.PTConcurrency < 1 || c.PTConcurrency > 16 {
+		return fmt.Errorf("config: PT_CONCURRENCY must be between 1 and 16, got %d", c.PTConcurrency)
+	}
+	switch c.PTFirstRun {
+	case "", "skip", "push":
+	default:
+		return fmt.Errorf("config: PT_FIRST_RUN must be skip or push, got %q", c.PTFirstRun)
 	}
 	for _, f := range c.FilterTypes {
 		switch f {

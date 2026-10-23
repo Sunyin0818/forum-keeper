@@ -6,3 +6,6 @@ data/
 *.test
 coverage.out
 __pycache__/
+pt-sites.json
+config/.env
+config/pt-sites.json

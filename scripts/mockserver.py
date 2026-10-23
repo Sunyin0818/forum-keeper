@@ -20,7 +20,14 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-STATE = {"polls": 0, "hooks": [], "deleted": [], "mission_claimed": False}
+STATE = {
+    "polls": 0,
+    "hooks": [],
+    "deleted": [],
+    "mission_claimed": False,
+    "pt_claimed": False,
+    "pt_message_polls": 0,
+}
 
 TOPIC_ID = 555
 TOPIC_TITLE = "关于 xxx 的讨论"
@@ -79,6 +86,19 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # silence access logs
         pass
 
+    def _query(self, name):
+        from urllib.parse import parse_qs, urlparse
+
+        return (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
+
+    def _pt_unread_count(self):
+        polls = STATE["pt_message_polls"]
+        if polls == 0:
+            return 1
+        if polls == 1:
+            return 2
+        return 0
+
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -113,6 +133,44 @@ class Handler(BaseHTTPRequestHandler):
                 '<span class="gray">%s 的每日登录奖励 42 铜币</span>'
                 % time.strftime("%Y%m%d")
             )
+        # PT sign-in fixture (NexusPHP-style attendance form).
+        if path == "/attendance.php":
+            if STATE["pt_claimed"]:
+                return self._html("<html><body>今日已签到</body></html>")
+            return self._html(
+                '<html><body><form action="/attendance.php" method="post">'
+                '<input type="hidden" name="token" value="smoke-token">'
+                '<input type="submit" name="submit" value="立即签到">'
+                "</form></body></html>"
+            )
+        # PT index: unread badge + inbox listing.
+        if path == "/index.php":
+            count = self._pt_unread_count()
+            return self._html(
+                '<html><body><a href="messages.php">消息 (%d)</a></body></html>' % count
+            )
+        if path == "/messages.php" and self._query("action") == "viewmailbox":
+            if self._query("box") == "-2":
+                return self._html("<html><body><table></table></body></html>")
+            STATE["pt_message_polls"] += 1
+            rows = []
+            ids = [7] if STATE["pt_message_polls"] == 1 else [7, 8]
+            for mid in ids:
+                rows.append(
+                    '<tr><td><img class="unreadpm" alt="Unread"></td>'
+                    '<td><a href="messages.php?action=viewmessage&amp;id=%d">Msg %d</a></td>'
+                    "<td>2026-10-23 09:00:00</td></tr>" % (mid, mid)
+                )
+            return self._html("<html><body><table>%s</table></body></html>" % "".join(rows))
+        if path == "/messages.php" and self._query("action") == "viewmessage":
+            mid = int(self._query("id") or 0)
+            return self._html(
+                "<html><body><h1>Msg %d</h1>"
+                '<table><tr><td class="colhead">From</td><td class="colhead">Date</td></tr>'
+                "<tr><td>system</td><td>2026-10-23 09:00:00</td></tr>"
+                '<tr><td colspan="2">hello from PT<br>second line</td></tr></table>'
+                "</body></html>" % mid
+            )
         if path == "/api/v2/member":
             return self._json({"result": {"id": 1, "username": "tester"}})
         # 2libra coin ledger behind https://2libra.com/coins (check-in reward).
@@ -137,6 +195,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/hook":
             STATE["hooks"].append(json.loads(raw))
             return self._json({"code": 0, "msg": "success"})
+        if self.path == "/attendance.php":
+            STATE["pt_claimed"] = True
+            return self._html("<html><body>签到成功，获得 20 魔力值</body></html>")
         # 2libra check-in.
         if self.path == "/api/sign":
             return self._json(

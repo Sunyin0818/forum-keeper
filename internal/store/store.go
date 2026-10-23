@@ -4,6 +4,7 @@ package store
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,11 +13,17 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/Sunyin0818/forum-keeper/internal/ptsite"
 )
 
 var (
-	seenBucket = []byte("seen")
-	metaBucket = []byte("meta")
+	seenBucket      = []byte("seen")
+	metaBucket      = []byte("meta")
+	ptCheckinBucket = []byte("pt_checkin")
+	ptSeenBucket    = []byte("pt_seen")
+	ptPendingBucket = []byte("pt_pending")
+	ptCardBucket    = []byte("pt_card")
 )
 
 const (
@@ -24,10 +31,12 @@ const (
 	checkinKey = "checkin_at"
 )
 
-// Store is a bbolt-backed set of seen notification IDs.
+// Store is a bbolt-backed state database.
 type Store struct {
 	db *bolt.DB
 }
+
+var _ ptsite.State = (*Store)(nil)
 
 // Open opens (or creates) the state database at path, creating parent
 // directories as needed.
@@ -42,11 +51,12 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		if _, e := tx.CreateBucketIfNotExists(seenBucket); e != nil {
-			return e
+		for _, name := range [][]byte{seenBucket, metaBucket, ptCheckinBucket, ptSeenBucket, ptPendingBucket, ptCardBucket} {
+			if _, e := tx.CreateBucketIfNotExists(name); e != nil {
+				return e
+			}
 		}
-		_, e := tx.CreateBucketIfNotExists(metaBucket)
-		return e
+		return nil
 	}); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: init %s: %w", path, err)
@@ -260,4 +270,245 @@ func (s *Store) metaTime(key, label string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("store: %s: %w", label, err)
 	}
 	return t, nil
+}
+
+// --- PT site state ---------------------------------------------------------
+
+const ptFirstRunKey = "pt_first_run_done"
+
+type ptSeenValue struct {
+	SeenAt int64  `json:"seen_at"`
+	Digest string `json:"digest,omitempty"`
+}
+
+func (s *Store) LoadCheckin(day, host string) (ptsite.CheckinState, bool, error) {
+	var st ptsite.CheckinState
+	ok, err := s.getJSON(ptCheckinBucket, []byte(day+"|"+host), &st)
+	return st, ok, err
+}
+
+func (s *Store) SaveCheckin(day, host string, st ptsite.CheckinState) error {
+	return s.putJSON(ptCheckinBucket, []byte(day+"|"+host), st)
+}
+
+func (s *Store) AllCheckinTerminal(day string, hosts []string) (bool, error) {
+	for _, host := range hosts {
+		st, ok, err := s.LoadCheckin(day, host)
+		if err != nil {
+			return false, err
+		}
+		if !ok || !st.Terminal {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (s *Store) FirstRunDone() (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	var done bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(metaBucket)
+		if b != nil && b.Get([]byte(ptFirstRunKey)) != nil {
+			done = true
+		}
+		return nil
+	})
+	return done, err
+}
+
+func (s *Store) SetFirstRunDone() error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(metaBucket)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(ptFirstRunKey), []byte("1"))
+	})
+}
+
+func (s *Store) MessageSeen(host, id string) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	var seen bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(ptSeenBucket)
+		if b != nil && b.Get([]byte(host+"|"+id)) != nil {
+			seen = true
+		}
+		return nil
+	})
+	return seen, err
+}
+
+func (s *Store) MarkMessage(host, id, digest string) error {
+	if s.db == nil {
+		return nil
+	}
+	value, err := json.Marshal(ptSeenValue{SeenAt: time.Now().Unix(), Digest: digest})
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(ptSeenBucket)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(host+"|"+id), value)
+	})
+}
+
+func (s *Store) SavePending(msg ptsite.Message) error {
+	return s.putJSON(ptPendingBucket, []byte(msg.Host+"|"+msg.Key()), msg)
+}
+
+func (s *Store) PendingMessages() ([]ptsite.Message, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	var out []ptsite.Message
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(ptPendingBucket)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
+			var msg ptsite.Message
+			if err := json.Unmarshal(v, &msg); err != nil {
+				return nil // tolerate a corrupt row rather than blocking delivery
+			}
+			out = append(out, msg)
+			return nil
+		})
+	})
+	return out, err
+}
+
+func (s *Store) DeletePending(host, id string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(ptPendingBucket)
+		if b == nil {
+			return nil
+		}
+		return b.Delete([]byte(host + "|" + id))
+	})
+}
+
+// PrunePTSeen drops message dedupe entries older than before. It is called on
+// startup so the bucket does not grow without bound.
+func (s *Store) PrunePTSeen(before time.Time) error {
+	if s.db == nil {
+		return nil
+	}
+	var stale [][]byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(ptSeenBucket)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			var item ptSeenValue
+			if err := json.Unmarshal(v, &item); err != nil {
+				stale = append(stale, append([]byte(nil), k...))
+				return nil
+			}
+			if item.SeenAt > 0 && time.Unix(item.SeenAt, 0).Before(before) {
+				stale = append(stale, append([]byte(nil), k...))
+			}
+			return nil
+		})
+	})
+	if err != nil || len(stale) == 0 {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(ptSeenBucket)
+		for _, k := range stale {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// SavePendingCheckinCard stores the last undelivered check-in card. entries is
+// JSON produced by the app; markDone tells a retry whether this card is the
+// one that completes the day.
+func (s *Store) SavePendingCheckinCard(group string, entries []byte, markDone bool) error {
+	return s.putJSON(ptCardBucket, []byte(group), struct {
+		Entries  []byte `json:"entries"`
+		MarkDone bool   `json:"mark_done"`
+	}{Entries: entries, MarkDone: markDone})
+}
+
+func (s *Store) PendingCheckinCard(group string) ([]byte, bool, bool, error) {
+	var value struct {
+		Entries  []byte `json:"entries"`
+		MarkDone bool   `json:"mark_done"`
+	}
+	ok, err := s.getJSON(ptCardBucket, []byte(group), &value)
+	return value.Entries, value.MarkDone, ok, err
+}
+
+func (s *Store) ClearPendingCheckinCard(group string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(ptCardBucket)
+		if b == nil {
+			return nil
+		}
+		return b.Delete([]byte(group))
+	})
+}
+
+func (s *Store) getJSON(bucket, key []byte, out any) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	var found bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucket)
+		if b == nil {
+			return nil
+		}
+		v := b.Get(key)
+		if v == nil {
+			return nil
+		}
+		found = true
+		return json.Unmarshal(v, out)
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: read %s: %w", string(bucket), err)
+	}
+	return found, nil
+}
+
+func (s *Store) putJSON(bucket, key []byte, value any) error {
+	if s.db == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(bucket)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, raw)
+	})
 }

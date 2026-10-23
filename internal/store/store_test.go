@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Sunyin0818/forum-keeper/internal/ptsite"
 )
 
 func TestFilterNewMarkAndCount(t *testing.T) {
@@ -241,5 +243,85 @@ func TestSetCheckinOnEmptyReadOnlyStoreIsNoop(t *testing.T) {
 	}
 	if got, err := s.LastCheckin(); err != nil || !got.IsZero() {
 		t.Fatalf("LastCheckin = %v, %v; want zero", got, err)
+	}
+}
+
+func TestPTCheckinState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	day := "2026-10-23"
+	st := ptsite.CheckinState{Day: day, Host: "hdsky.me", Status: "success", Detail: "ok", Terminal: true}
+	if err := s.SaveCheckin(day, "hdsky.me", st); err != nil {
+		t.Fatalf("SaveCheckin: %v", err)
+	}
+	got, ok, err := s.LoadCheckin(day, "hdsky.me")
+	if err != nil || !ok || !got.Terminal || got.Status != "success" {
+		t.Fatalf("LoadCheckin = %+v, %v, %v", got, ok, err)
+	}
+	if ok, err := s.AllCheckinTerminal(day, []string{"hdsky.me"}); err != nil || !ok {
+		t.Fatalf("AllCheckinTerminal = %v, %v", ok, err)
+	}
+	if ok, err := s.AllCheckinTerminal(day, []string{"hdsky.me", "other"}); err != nil || ok {
+		t.Fatalf("AllCheckinTerminal missing site = %v, %v", ok, err)
+	}
+}
+
+func TestPTMessageDedupeAndPending(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	msg := ptsite.Message{Site: "HDSky", Host: "hdsky.me", ID: "42", Title: "hi", Body: "body", URL: "https://hdsky.me/messages.php?action=viewmessage&id=42"}
+	if seen, err := s.MessageSeen(msg.Host, msg.Key()); err != nil || seen {
+		t.Fatalf("MessageSeen before = %v, %v", seen, err)
+	}
+	if err := s.MarkMessage(msg.Host, msg.Key(), msg.Digest); err != nil {
+		t.Fatalf("MarkMessage: %v", err)
+	}
+	if seen, err := s.MessageSeen(msg.Host, msg.Key()); err != nil || !seen {
+		t.Fatalf("MessageSeen after = %v, %v", seen, err)
+	}
+	if err := s.SavePending(msg); err != nil {
+		t.Fatalf("SavePending: %v", err)
+	}
+	pending, err := s.PendingMessages()
+	if err != nil || len(pending) != 1 || pending[0].ID != "42" {
+		t.Fatalf("PendingMessages = %+v, %v", pending, err)
+	}
+	if err := s.DeletePending(msg.Host, msg.Key()); err != nil {
+		t.Fatalf("DeletePending: %v", err)
+	}
+	if pending, err := s.PendingMessages(); err != nil || len(pending) != 0 {
+		t.Fatalf("PendingMessages after delete = %+v, %v", pending, err)
+	}
+}
+
+func TestPendingCheckinCard(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	raw := []byte(`[{"Site":"HDSky","OK":true,"Detail":"ok","Status":"success"}]`)
+	if err := s.SavePendingCheckinCard("pt", raw, true); err != nil {
+		t.Fatalf("SavePendingCheckinCard: %v", err)
+	}
+	got, markDone, found, err := s.PendingCheckinCard("pt")
+	if err != nil || !found || !markDone || string(got) != string(raw) {
+		t.Fatalf("PendingCheckinCard = %q, %v, %v, %v", got, markDone, found, err)
+	}
+	if err := s.ClearPendingCheckinCard("pt"); err != nil {
+		t.Fatalf("ClearPendingCheckinCard: %v", err)
+	}
+	if _, _, found, err := s.PendingCheckinCard("pt"); err != nil || found {
+		t.Fatalf("after clear found=%v err=%v", found, err)
 	}
 }

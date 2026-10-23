@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Sources .env.
+# Sources config/.env (fallback: ./.env).
 # shellcheck source=scripts/local-env.sh
 . ./scripts/local-env.sh
 

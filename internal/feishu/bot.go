@@ -52,6 +52,16 @@ func (b *Bot) Checkin(ctx context.Context, entries []CheckinEntry) error {
 	return b.client.SendCard(ctx, BuildCheckinCard(entries, time.Now()))
 }
 
+// CheckinGroup reports one check-in group (forums or PT) as its own card.
+func (b *Bot) CheckinGroup(ctx context.Context, group string, entries []CheckinEntry) error {
+	return b.client.SendCard(ctx, BuildCheckinCardFor(entries, time.Now(), group))
+}
+
+// SiteMessages reports new tracker inbox messages.
+func (b *Bot) SiteMessages(ctx context.Context, messages []SiteMessage) error {
+	return b.client.SendCard(ctx, BuildSiteMessagesCard(messages, time.Now()))
+}
+
 // resolveTitles lazily looks up topic titles, tolerating failures: a missing
 // title is not worth failing the whole notification.
 //

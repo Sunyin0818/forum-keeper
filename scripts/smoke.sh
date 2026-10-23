@@ -54,6 +54,33 @@ V2EX_COOKIE="A2=smoke" V2EX_WEB_BASE_URL="$BASE" \
   LIBRA_COOKIE="access_token=smoke" LIBRA_BASE_URL="$BASE" \
   "$WORK/forum-keeper" --checkin
 
+echo "==> run 5: PT site check-in"
+cat >"$WORK/pt-sites.json" <<EOF
+{
+  "first_run": "skip",
+  "sites": [
+    {
+      "name": "HDSky",
+      "url": "$BASE",
+      "cookie": "session=smoke",
+      "signin": {"mode": "checkin"},
+      "messages": {"mode": "full"}
+    }
+  ]
+}
+EOF
+PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --check-config
+PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --checkin
+
+echo "==> run 6: first PT inbox poll records existing unread without pushing"
+PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --pt-messages
+
+echo "==> run 7: a new PT message is pushed once"
+PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --pt-messages
+
+echo "==> run 8: the same PT message is not pushed again"
+PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --pt-messages
+
 python3 - "$BASE" <<'PY'
 import json
 import sys
@@ -62,13 +89,13 @@ import urllib.request
 state = json.load(urllib.request.urlopen(sys.argv[1] + "/__hooks"))
 hooks, deleted = state["hooks"], state["deleted"]
 
-if len(hooks) != 4:
-    raise SystemExit("expected 4 cards, got %d: %s" % (len(hooks), hooks))
+if len(hooks) != 6:
+    raise SystemExit("expected 6 cards, got %d: %s" % (len(hooks), hooks))
 
 def blob(card):
     return json.dumps(card, ensure_ascii=False)
 
-startup, first, second, checkin = (blob(h) for h in hooks)
+startup, first, second, checkin, ptcheckin, ptmsg = (blob(h) for h in hooks)
 
 # run 0: startup card
 assert hooks[0]["msg_type"] == "interactive", startup
@@ -89,16 +116,29 @@ assert deleted == [4], "expected [4] deleted, got %s" % deleted
 # run 4: daily check-in card for V2EX + 2libra
 assert hooks[3]["msg_type"] == "interactive", checkin
 assert hooks[3]["card"]["header"]["template"] == "green", checkin
-assert "每日签到" in checkin, checkin
+assert "论坛签到" in checkin, checkin
 assert "V2EX" in checkin and "2libra" in checkin, checkin
 assert "42 铜币" in checkin, checkin
 assert "余额 29 银币 77 铜币" in checkin, checkin
 assert "签到勤勉检定" in checkin, checkin
 assert "110 金币" in checkin, checkin
 
+# run 5: PT check-in (separate card)
+assert hooks[4]["card"]["header"]["template"] == "green", ptcheckin
+assert "PT 签到" in ptcheckin, ptcheckin
+assert "HDSky" in ptcheckin, ptcheckin
+assert "20 魔力值" in ptcheckin, ptcheckin
+
+# run 7: only the newly arrived message; run 6 recorded id 7 as history.
+assert "Msg 8" in ptmsg, ptmsg
+assert "hello from PT" in ptmsg, ptmsg
+assert "second line" in ptmsg, ptmsg
+assert "Msg 7" not in ptmsg, ptmsg
+assert "HDSky" in ptmsg, ptmsg
+
 # Real V2EX notifications carry an HTML fragment in `text`. None of that markup
 # may reach the card.
-for name, payload in (("startup", startup), ("carol", first), ("dave", second), ("check-in", checkin)):
+for name, payload in (("startup", startup), ("carol", first), ("dave", second), ("check-in", checkin), ("pt-check-in", ptcheckin), ("pt-message", ptmsg)):
     for bad in ("<a ", "</a>", "<strong>", "topic-link", "target=", "<p>"):
         assert bad not in payload, "%s card leaked markup %r: %s" % (name, bad, payload)
 
@@ -106,5 +146,5 @@ for name, payload in (("startup", startup), ("carol", first), ("dave", second), 
 assert "感谢了你的主题" in first, first
 assert "回复了你" in second, second
 
-print("smoke OK: startup card + 2 notification cards + check-in card, no HTML leaked, 1 marked read")
+print("smoke OK: startup + 2 notification + forum/PT check-in + PT message cards, no HTML leaked, 1 marked read")
 PY

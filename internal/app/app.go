@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/Sunyin0818/forum-keeper/internal/checkin"
 	"github.com/Sunyin0818/forum-keeper/internal/config"
 	"github.com/Sunyin0818/forum-keeper/internal/feishu"
+	"github.com/Sunyin0818/forum-keeper/internal/ptsite"
 	"github.com/Sunyin0818/forum-keeper/internal/store"
 	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
@@ -41,6 +43,14 @@ type Fetcher interface {
 	Member(ctx context.Context) (*v2ex.Member, error)
 }
 
+// pendingCardState stores a check-in card that could not be delivered. It is
+// implemented by the bbolt store; tests can omit it.
+type pendingCardState interface {
+	SavePendingCheckinCard(group string, entries []byte, markDone bool) error
+	PendingCheckinCard(group string) ([]byte, bool, bool, error)
+	ClearPendingCheckinCard(group string) error
+}
+
 // State records which notification IDs have already been handled.
 type State interface {
 	FilterNew(ids []int) ([]int, error)
@@ -58,6 +68,8 @@ type Notifier interface {
 	Alert(ctx context.Context, text string) error
 	Startup(ctx context.Context, lines []string) error
 	Checkin(ctx context.Context, entries []feishu.CheckinEntry) error
+	CheckinGroup(ctx context.Context, group string, entries []feishu.CheckinEntry) error
+	SiteMessages(ctx context.Context, messages []feishu.SiteMessage) error
 }
 
 // rateLimiter is implemented by the real client; used only for logging.
@@ -86,6 +98,9 @@ type App struct {
 	version string
 	member  *v2ex.Member
 	sites   []checkin.Site
+
+	ptRunner       *ptsite.Runner
+	ptPollInterval time.Duration
 }
 
 // New builds an App from configuration, opening the state database and HTTP
@@ -99,8 +114,47 @@ func New(cfg *config.Config, logger *slog.Logger, dryRun bool) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if pruner, ok := st.(interface{ PrunePTSeen(time.Time) error }); ok {
+		if err := pruner.PrunePTSeen(time.Now().Add(-90 * 24 * time.Hour)); err != nil {
+			logger.Warn("prune PT message state", "err", err)
+		}
+	}
+	ptCfg, ptSites, err := loadPTSites(cfg, logger, dryRun)
+	if err != nil {
+		if closer, ok := st.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+		return nil, err
+	}
 	bot := feishu.NewBot(feishu.NewClient(cfg.FeishuWebhook, cfg.FeishuSecret, cfg.HTTPTimeout), src)
-	return NewWithDeps(cfg, logger, dryRun, src, st, bot), nil
+	a := NewWithDeps(cfg, logger, dryRun, src, st, bot)
+	if ptCfg != nil {
+		a.SetPTSites(ptCfg, ptSites)
+	}
+	return a, nil
+}
+
+// loadPTSites parses PT_SITES_FILE and builds one client per site. A malformed
+// file is a startup error: silently disabling a tracker would make a missing
+// sign-in look like a completed one.
+func loadPTSites(cfg *config.Config, logger *slog.Logger, dryRun bool) (*ptsite.Config, []*ptsite.Site, error) {
+	if strings.TrimSpace(cfg.PTSitesFile) == "" {
+		return nil, nil, nil
+	}
+	pcfg, err := ptsite.Load(cfg.PTSitesFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	sites := make([]*ptsite.Site, 0, len(pcfg.Sites))
+	for _, sc := range pcfg.Sites {
+		site, err := ptsite.NewSite(sc, logger, dryRun)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ptsite %s: %w", sc.Name, err)
+		}
+		sites = append(sites, site)
+	}
+	logger.Info("pt sites loaded", "config", cfg.PTSitesFile, "sites", len(sites), "poll", pcfg.Poll.String())
+	return pcfg, sites, nil
 }
 
 // openState opens the state database. Dry runs use a read-only store so they
@@ -122,7 +176,29 @@ func NewWithDeps(cfg *config.Config, logger *slog.Logger, dryRun bool, src Fetch
 		a.closer = closer.Close
 	}
 	a.sites = buildCheckinSites(cfg)
+	a.ptPollInterval = cfg.PTPollInterval
+	if a.ptPollInterval < time.Minute {
+		a.ptPollInterval = 2 * time.Hour
+	}
 	return a
+}
+
+// SetPTSites attaches PT sites. It is called by New after loading the config;
+// tests use it to inject a runner backed by an httptest server.
+func (a *App) SetPTSites(cfg *ptsite.Config, sites []*ptsite.Site) {
+	a.ptPollInterval = cfg.Poll
+	if a.ptPollInterval < time.Minute {
+		a.ptPollInterval = 2 * time.Hour
+	}
+	firstRun := cfg.FirstRun
+	if firstRun == "" {
+		firstRun = ptsite.FirstRunSkip
+	}
+	state, _ := a.state.(ptsite.State)
+	a.ptRunner = ptsite.NewRunner(
+		sites, state, a.log, firstRun,
+		a.cfg.PTCheckinRetries+1, a.cfg.PTConcurrency, a.dryRun,
+	)
 }
 
 // buildCheckinSites turns credentials in the configuration into sites. A site
@@ -155,6 +231,37 @@ func (a *App) Close() error {
 // SetVersion records the build version so the startup message can report it.
 func (a *App) SetVersion(v string) {
 	a.version = v
+}
+
+// CheckConfig validates the loaded configuration and prints the resolved
+// sites without secrets. It is used by --check-config.
+func (a *App) CheckConfig() error {
+	for _, site := range a.sites {
+		a.log.Info("check-in site", "name", site.Name())
+	}
+	if a.ptRunner == nil {
+		a.log.Info("PT sites: disabled (PT_SITES_FILE is empty)")
+		return nil
+	}
+	for _, site := range a.ptRunner.Sites() {
+		cfg := site.Config()
+		cookieFrom := "inline"
+		if cfg.CookieEnv != "" {
+			cookieFrom = "env:" + cfg.CookieEnv
+		}
+		a.log.Info("PT site",
+			"name", cfg.Name,
+			"host", cfg.Host(),
+			"preset", cfg.Preset,
+			"cookie_from", cookieFrom,
+			"signin", cfg.Signin.Mode,
+			"signin_path", cfg.Signin.Path,
+			"messages", cfg.Messages.Engine,
+			"messages_mode", cfg.Messages.Mode,
+		)
+	}
+	a.log.Info("config OK", "pt_sites", len(a.ptRunner.Sites()))
+	return nil
 }
 
 // CheckToken validates the personal access token and logs the identity.
@@ -218,6 +325,9 @@ func (a *App) startupLines() []string {
 		lines = append(lines, fmt.Sprintf("账号: @%s (id %d)", a.member.Username, a.member.ID))
 	}
 	lines = append(lines, "每日签到: "+a.checkinLabel())
+	if a.ptRunner != nil {
+		lines = append(lines, fmt.Sprintf("PT 站点: %d 个 · 消息轮询 %s", len(a.ptRunner.Sites()), a.ptPollInterval))
+	}
 	if a.RemindersEnabled() {
 		lines = append(lines,
 			"提醒: V2EX",
@@ -238,12 +348,19 @@ func (a *App) startupLines() []string {
 
 // checkinLabel summarises the check-in schedule for the startup card.
 func (a *App) checkinLabel() string {
-	if len(a.sites) == 0 {
-		return "未启用"
-	}
 	names := make([]string, 0, len(a.sites))
 	for _, s := range a.sites {
 		names = append(names, s.Name())
+	}
+	if a.ptRunner != nil {
+		for _, s := range a.ptRunner.Sites() {
+			if s.Config().Signin.Mode != "off" {
+				names = append(names, s.Name())
+			}
+		}
+	}
+	if len(names) == 0 {
+		return "未启用"
 	}
 	loc := a.cfg.CheckinLocation
 	if loc == nil {
@@ -277,9 +394,24 @@ func (a *App) Run(ctx context.Context) error {
 		// A failed startup message must not stop the service.
 		a.log.Warn("startup message failed", "err", err)
 	}
-	if len(a.sites) > 0 {
+	pendingForums := false
+	if _, _, pending := a.loadPendingCheckinCard(feishu.CheckinGroupForums); pending {
+		pendingForums = true
+	}
+	if _, _, pending := a.loadPendingCheckinCard(feishu.CheckinGroupPT); pending {
+		pendingForums = true
+	}
+	if pendingForums {
+		// A card from the previous process was never delivered; retry it even
+		// when CHECKIN_ON_START is disabled.
+		a.retryAt = time.Now().Add(time.Minute)
+	}
+	if len(a.sites) > 0 || a.ptRunner != nil {
 		a.maybeCheckinOnStart(ctx)
 		go a.checkinLoop(ctx)
+	}
+	if a.ptMessageEnabled() {
+		go a.ptMessageLoop(ctx)
 	}
 
 	if !a.RemindersEnabled() {
@@ -308,44 +440,179 @@ func (a *App) Run(ctx context.Context) error {
 // a single Feishu card. It is safe to call repeatedly: every site treats
 // "already signed in today" as a success.
 func (a *App) RunCheckins(ctx context.Context) error {
-	if len(a.sites) == 0 {
-		a.log.Info("check-in skipped: no site configured")
+	return a.runCheckins(ctx, true)
+}
+
+// runCheckins is the scheduled path when force is false: a legacy site that
+// already reported today is not asked again just because a PT retry woke the
+// loop. The public RunCheckins (CLI / startup) keeps the historical
+// "always run" behaviour.
+func (a *App) runCheckins(ctx context.Context, force bool) error {
+	var forumResults, ptResults []checkin.Result
+	if len(a.sites) > 0 && (force || !a.legacyCheckinDoneToday()) {
+		forumResults = checkin.Run(ctx, a.log, a.sites)
+	}
+	if a.ptRunner != nil {
+		ptResults = a.ptRunner.RunDue(ctx)
+		if force {
+			day := time.Now().In(a.checkinLoc()).Format("2006-01-02")
+			ptResults = mergeCheckinResults(ptResults, a.ptRunner.TerminalResults(day))
+		}
+	}
+
+	a.retryAt = time.Time{}
+	if retry := pendingRetry(forumResults); !retry.IsZero() {
+		a.retryAt = retry
+		a.log.Info("check-in deferred until the site's daily window opens",
+			"at", retry.Format("2006-01-02 15:04:05"),
+			"in", time.Until(retry).Round(time.Second).String())
+	}
+	if a.ptRunner != nil {
+		if retry := a.ptRunner.NextRetry(); !retry.IsZero() {
+			if a.retryAt.IsZero() || retry.Before(a.retryAt) {
+				a.retryAt = retry
+			}
+			a.log.Info("PT check-in retry scheduled",
+				"at", retry.Format("2006-01-02 15:04:05"),
+				"in", time.Until(retry).Round(time.Second).String())
+		}
+	}
+
+	// Do not mark the whole day done while a forum site still has an open
+	// daily window; the PT card may be sent first, but the day stays open.
+	allowMarkDone := pendingRetry(forumResults).IsZero()
+	var firstErr error
+	if err := a.deliverCheckinGroup(ctx, feishu.CheckinGroupForums, forumResults, allowMarkDone); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := a.deliverCheckinGroup(ctx, feishu.CheckinGroupPT, ptResults, allowMarkDone); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// deliverCheckinGroup sends one group's card (forums or PT) and keeps its
+// pending card separate, so a failed PT card never blocks the forum card and
+// vice versa.
+func (a *App) deliverCheckinGroup(ctx context.Context, group string, results []checkin.Result, allowMarkDone bool) error {
+	pendingEntries, pendingMarkDone, hasPending := a.loadPendingCheckinCard(group)
+	if len(results) == 0 && !hasPending {
+		a.log.Info("check-in group skipped", "group", group)
 		return nil
 	}
 
-	results := checkin.Run(ctx, a.log, a.sites)
 	ok := 0
 	for _, r := range results {
 		if r.OK() {
 			ok++
 		}
 	}
-	a.log.Info("check-in finished", "ok", ok, "total", len(results))
+	a.log.Info("check-in group finished", "group", group, "ok", ok, "total", len(results), "pending_card", hasPending)
 
 	if a.dryRun {
 		for _, r := range results {
-			a.log.Info("dry-run: check-in result", "site", r.Site, "status", string(r.Status), "detail", r.Detail)
+			a.log.Info("dry-run: check-in result", "group", group, "site", r.Site, "status", string(r.Status), "detail", r.Detail)
+		}
+		if hasPending {
+			a.log.Info("dry-run: would resend a pending check-in card", "group", group, "entries", len(pendingEntries))
 		}
 		return nil
 	}
 
-	// A pending site has nothing to claim yet: sending "已签过" now would record
-	// the day as done and skip the real claim. Defer the whole run - including
-	// the card - to the moment the window opens.
+	legacyPending := false
 	if retry := pendingRetry(results); !retry.IsZero() {
-		a.retryAt = retry
-		a.log.Info("check-in deferred until the site's daily window opens",
-			"at", retry.Format("2006-01-02 15:04:05"),
-			"in", time.Until(retry).Round(time.Second).String())
+		legacyPending = true
+	}
+	fresh := make([]feishu.CheckinEntry, 0, len(results))
+	for _, r := range results {
+		if r.Pending() {
+			continue
+		}
+		fresh = append(fresh, feishu.CheckinEntry{
+			Site:   r.Site,
+			OK:     r.OK(),
+			Detail: r.Detail,
+			Status: string(r.Status),
+		})
+	}
+	entries := mergeCheckinEntries(pendingEntries, fresh)
+	if len(entries) == 0 {
 		return nil
 	}
-	a.retryAt = time.Time{}
-
-	entries := make([]feishu.CheckinEntry, 0, len(results))
-	for _, r := range results {
-		entries = append(entries, feishu.CheckinEntry{Site: r.Site, OK: r.OK(), Detail: r.Detail})
+	markDone := allowMarkDone && !legacyPending
+	if len(fresh) == 0 && hasPending {
+		markDone = allowMarkDone && pendingMarkDone
 	}
-	return a.sendCheckinCard(ctx, entries)
+	err := a.sendCheckinCard(ctx, group, entries, markDone)
+	if err != nil {
+		// The card is persisted by sendCheckinCard; wake the loop soon instead
+		// of waiting for tomorrow's schedule.
+		a.retryAt = time.Now().Add(10 * time.Minute)
+	}
+	return err
+}
+
+func (a *App) loadPendingCheckinCard(group string) ([]feishu.CheckinEntry, bool, bool) {
+	state, ok := a.state.(pendingCardState)
+	if !ok {
+		return nil, false, false
+	}
+	raw, markDone, found, err := state.PendingCheckinCard(group)
+	if err != nil {
+		a.log.Warn("could not read pending check-in card", "err", err)
+		return nil, false, false
+	}
+	if !found {
+		return nil, false, false
+	}
+	var entries []feishu.CheckinEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		a.log.Warn("could not decode pending check-in card", "err", err)
+		return nil, false, false
+	}
+	return entries, markDone, true
+}
+
+// mergeCheckinEntries keeps the pending card's order and replaces a site with
+// its fresher result when the retry ran it again.
+func mergeCheckinResults(base, extra []checkin.Result) []checkin.Result {
+	out := make([]checkin.Result, 0, len(base)+len(extra))
+	index := make(map[string]int, len(base)+len(extra))
+	add := func(r checkin.Result) {
+		if i, ok := index[r.Site]; ok {
+			out[i] = r
+			return
+		}
+		index[r.Site] = len(out)
+		out = append(out, r)
+	}
+	for _, r := range base {
+		add(r)
+	}
+	for _, r := range extra {
+		add(r)
+	}
+	return out
+}
+
+func mergeCheckinEntries(base, fresh []feishu.CheckinEntry) []feishu.CheckinEntry {
+	out := make([]feishu.CheckinEntry, 0, len(base)+len(fresh))
+	index := make(map[string]int, len(base)+len(fresh))
+	add := func(e feishu.CheckinEntry) {
+		if i, ok := index[e.Site]; ok {
+			out[i] = e
+			return
+		}
+		index[e.Site] = len(out)
+		out = append(out, e)
+	}
+	for _, e := range base {
+		add(e)
+	}
+	for _, e := range fresh {
+		add(e)
+	}
+	return out
 }
 
 // pendingRetry returns the earliest moment a pending site can be retried, or
@@ -376,7 +643,7 @@ func pendingRetry(results []checkin.Result) time.Time {
 //
 // The day is only marked as done once the card is accepted, so a send that
 // never succeeds still lets CHECKIN_ON_START catch up after a restart.
-func (a *App) sendCheckinCard(ctx context.Context, entries []feishu.CheckinEntry) error {
+func (a *App) sendCheckinCard(ctx context.Context, group string, entries []feishu.CheckinEntry, markDone bool) error {
 	var err error
 	for attempt := 1; attempt <= checkinCardAttempts; attempt++ {
 		if attempt > 1 {
@@ -384,19 +651,156 @@ func (a *App) sendCheckinCard(ctx context.Context, entries []feishu.CheckinEntry
 			a.log.Info("retrying check-in card", "attempt", attempt, "in", delay.Round(time.Second).String())
 			select {
 			case <-ctx.Done():
+				a.savePendingCheckinCard(group, entries, markDone)
 				return ctx.Err()
 			case <-time.After(delay):
 			}
 		}
-		if err = a.bot.Checkin(ctx, entries); err == nil {
-			if rerr := a.state.SetCheckin(time.Now()); rerr != nil {
-				a.log.Warn("could not record check-in time", "err", rerr)
+		if err = a.bot.CheckinGroup(ctx, group, entries); err == nil {
+			a.clearPendingCheckinCard(group)
+			if markDone {
+				if rerr := a.state.SetCheckin(time.Now()); rerr != nil {
+					a.log.Warn("could not record check-in time", "err", rerr)
+				}
 			}
 			return nil
 		}
 		a.log.Warn("check-in card rejected", "attempt", attempt, "err", err)
 	}
-	return fmt.Errorf("send check-in card: %w", err)
+	a.savePendingCheckinCard(group, entries, markDone)
+	return fmt.Errorf("send %s check-in card: %w", group, err)
+}
+
+func (a *App) savePendingCheckinCard(group string, entries []feishu.CheckinEntry, markDone bool) {
+	state, ok := a.state.(pendingCardState)
+	if !ok {
+		return
+	}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		a.log.Warn("could not encode pending check-in card", "err", err)
+		return
+	}
+	if err := state.SavePendingCheckinCard(group, raw, markDone); err != nil {
+		a.log.Warn("could not save pending check-in card", "err", err)
+	}
+}
+
+func (a *App) clearPendingCheckinCard(group string) {
+	state, ok := a.state.(pendingCardState)
+	if !ok {
+		return
+	}
+	if err := state.ClearPendingCheckinCard(group); err != nil {
+		a.log.Warn("could not clear pending check-in card", "err", err)
+	}
+}
+
+// ptMessageEnabled reports whether any configured PT site has inbox reading
+// turned on.
+func (a *App) ptMessageEnabled() bool {
+	if a.ptRunner == nil {
+		return false
+	}
+	for _, site := range a.ptRunner.Sites() {
+		if site.Config().Messages.Engine != "off" {
+			return true
+		}
+	}
+	return false
+}
+
+// ptMessageLoop polls tracker inboxes. The first poll runs shortly after
+// startup; with PT_FIRST_RUN=skip it only records existing unread messages.
+func (a *App) ptMessageLoop(ctx context.Context) {
+	delay := 10 * time.Second
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if err := a.pollPTMessages(ctx); err != nil {
+			a.log.Warn("PT message poll failed", "err", err)
+		}
+		delay = a.ptPollInterval
+		if delay < time.Minute {
+			delay = 2 * time.Hour
+		}
+		// Spread requests over a small window so several instances or a
+		// restart do not hit every tracker at the same second.
+		if spread := int64(delay / 10); spread > 0 {
+			delay += time.Duration(time.Now().UnixNano() % spread)
+		}
+	}
+}
+
+// PollPTMessages runs one inbox poll. It is used by the --pt-messages flag.
+func (a *App) PollPTMessages(ctx context.Context) error {
+	if a.ptRunner == nil {
+		a.log.Info("PT message poll skipped: PT_SITES_FILE is empty")
+		return nil
+	}
+	return a.pollPTMessages(ctx)
+}
+
+// pollPTMessages delivers pending messages first, then fetches new unread
+// entries. A message is marked seen only after the card is accepted.
+func (a *App) pollPTMessages(ctx context.Context) error {
+	if a.ptRunner == nil {
+		return nil
+	}
+	pending, err := a.ptRunner.Pending()
+	if err != nil {
+		return fmt.Errorf("load pending PT messages: %w", err)
+	}
+	if len(pending) > 0 {
+		if a.dryRun {
+			a.log.Info("dry-run: would resend pending PT messages", "count", len(pending))
+		} else {
+			if err := a.bot.SiteMessages(ctx, toSiteMessages(pending)); err != nil {
+				return fmt.Errorf("send pending PT messages: %w", err)
+			}
+			a.ptRunner.MarkSent(pending)
+			a.log.Info("pending PT messages delivered", "count", len(pending))
+		}
+	}
+
+	msgs, err := a.ptRunner.FetchNew(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch PT messages: %w", err)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	if a.dryRun {
+		for _, m := range msgs {
+			a.log.Info("dry-run: would push PT message", "site", m.Site, "id", m.ID, "title", m.Title)
+		}
+		return nil
+	}
+	if err := a.bot.SiteMessages(ctx, toSiteMessages(msgs)); err != nil {
+		return fmt.Errorf("send PT messages: %w", err)
+	}
+	a.ptRunner.MarkSent(msgs)
+	a.log.Info("PT messages pushed", "count", len(msgs))
+	return nil
+}
+
+func toSiteMessages(msgs []ptsite.Message) []feishu.SiteMessage {
+	out := make([]feishu.SiteMessage, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, feishu.SiteMessage{
+			Site:  m.Site,
+			Title: m.Title,
+			Date:  m.Date,
+			Body:  m.Body,
+			URL:   m.URL,
+		})
+	}
+	return out
 }
 
 // maybeCheckinOnStart catches up at startup when CHECKIN_ON_START is enabled:
@@ -419,7 +823,10 @@ func (a *App) maybeCheckinOnStart(ctx context.Context) {
 
 // checkedInToday reports whether a check-in already ran on the current
 // calendar day in the configured zone.
-func (a *App) checkedInToday() bool {
+func (a *App) legacyCheckinDoneToday() bool {
+	if len(a.sites) == 0 {
+		return true
+	}
 	last, err := a.state.LastCheckin()
 	if err != nil {
 		a.log.Warn("could not read last check-in time", "err", err)
@@ -428,12 +835,34 @@ func (a *App) checkedInToday() bool {
 	return !last.IsZero() && checkin.SameLocalDay(last, time.Now(), a.checkinLoc())
 }
 
+func (a *App) checkedInToday() bool {
+	if _, _, pending := a.loadPendingCheckinCard(feishu.CheckinGroupForums); pending {
+		return false
+	}
+	if _, _, pending := a.loadPendingCheckinCard(feishu.CheckinGroupPT); pending {
+		return false
+	}
+	if !a.legacyCheckinDoneToday() {
+		return false
+	}
+	if a.ptRunner == nil {
+		return true
+	}
+	return a.ptRunner.AllTerminal(time.Now().In(a.checkinLoc()).Format("2006-01-02"))
+}
+
 // checkinLoop sleeps until the configured wall-clock time and then signs in.
 func (a *App) checkinLoop(ctx context.Context) {
 	for {
 		now := time.Now()
+		retry := a.retryAt
+		if a.ptRunner != nil {
+			if next := a.ptRunner.NextRetry(); !next.IsZero() && (retry.IsZero() || next.Before(retry)) {
+				retry = next
+			}
+		}
 		var delay time.Duration
-		if retry := a.retryAt; !retry.IsZero() && retry.After(now) {
+		if !retry.IsZero() && retry.After(now) {
 			delay = retry.Sub(now)
 			a.log.Info("check-in retry scheduled",
 				"at", retry.Format("2006-01-02 15:04:05"),
@@ -464,7 +893,7 @@ func (a *App) checkinLoop(ctx context.Context) {
 		}
 
 		runCtx, cancel := context.WithTimeout(ctx, checkinRunTimeout)
-		err := a.RunCheckins(runCtx)
+		err := a.runCheckins(runCtx, false)
 		cancel()
 		if err != nil {
 			a.log.Error("check-in failed", "err", err)

@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +17,8 @@ import (
 	"github.com/Sunyin0818/forum-keeper/internal/checkin"
 	"github.com/Sunyin0818/forum-keeper/internal/config"
 	"github.com/Sunyin0818/forum-keeper/internal/feishu"
+	"github.com/Sunyin0818/forum-keeper/internal/ptsite"
+	"github.com/Sunyin0818/forum-keeper/internal/store"
 	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
@@ -114,11 +119,13 @@ func (s *fakeState) Mark(ids []int) error {
 func (s *fakeState) Count() (int, error) { return len(s.seen), nil }
 
 type fakeNotifier struct {
-	batches  [][]int
-	alerts   []string
-	startups [][]string
-	checkins [][]feishu.CheckinEntry
-	err      error
+	batches      [][]int
+	alerts       []string
+	startups     [][]string
+	checkins     [][]feishu.CheckinEntry
+	groups       []string
+	siteMessages [][]feishu.SiteMessage
+	err          error
 
 	// checkinCalls counts every Checkin attempt, including rejected ones.
 	checkinCalls int
@@ -151,7 +158,11 @@ func (n *fakeNotifier) Startup(_ context.Context, lines []string) error {
 	return nil
 }
 
-func (n *fakeNotifier) Checkin(_ context.Context, entries []feishu.CheckinEntry) error {
+func (n *fakeNotifier) Checkin(ctx context.Context, entries []feishu.CheckinEntry) error {
+	return n.CheckinGroup(ctx, "default", entries)
+}
+
+func (n *fakeNotifier) CheckinGroup(_ context.Context, group string, entries []feishu.CheckinEntry) error {
 	n.checkinCalls++
 	if n.err != nil {
 		return n.err
@@ -159,7 +170,16 @@ func (n *fakeNotifier) Checkin(_ context.Context, entries []feishu.CheckinEntry)
 	if n.checkinCalls <= n.checkinFail {
 		return errors.New("check-in card rejected")
 	}
+	n.groups = append(n.groups, group)
 	n.checkins = append(n.checkins, entries)
+	return nil
+}
+
+func (n *fakeNotifier) SiteMessages(_ context.Context, messages []feishu.SiteMessage) error {
+	if n.err != nil {
+		return n.err
+	}
+	n.siteMessages = append(n.siteMessages, messages)
 	return nil
 }
 
@@ -787,5 +807,236 @@ func TestPendingRetryPicksEarliestWindow(t *testing.T) {
 	}
 	if got := pendingRetry([]checkin.Result{{Status: checkin.StatusAlready}}); !got.IsZero() {
 		t.Fatalf("pendingRetry = %v, want zero when nothing is pending", got)
+	}
+}
+
+type fakePTState struct {
+	*fakeState
+	*ptsite.MemoryState
+}
+
+func newFakePTState() *fakePTState {
+	return &fakePTState{fakeState: newFakeState(), MemoryState: ptsite.NewMemoryState()}
+}
+
+func TestRunCheckinsWithPTSite(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><body>今日已签到</body></html>`)
+	}))
+	defer srv.Close()
+
+	site, err := ptsite.NewSite(ptsite.SiteConfig{
+		Name: "HDSky", URL: srv.URL, Cookie: "session=x",
+	}, nopLogger(), false)
+	if err != nil {
+		t.Fatalf("NewSite: %v", err)
+	}
+	site.SetVerifyDelay(0)
+
+	cfg := baseConfig()
+	cfg.PTCheckinRetries = 0
+	cfg.PTConcurrency = 1
+	st := newFakePTState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
+	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour}, []*ptsite.Site{site})
+
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("RunCheckins: %v", err)
+	}
+	if len(n.checkins) != 1 || len(n.checkins[0]) != 1 {
+		t.Fatalf("cards = %+v", n.checkins)
+	}
+	entry := n.checkins[0][0]
+	if entry.Site != "HDSky" || !entry.OK || entry.Status != string(checkin.StatusAlready) {
+		t.Fatalf("entry = %+v", entry)
+	}
+	if !a.checkedInToday() {
+		t.Fatal("successful site should be done for today")
+	}
+
+	// A manual re-run still lists the site even though it is already terminal.
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("second RunCheckins: %v", err)
+	}
+	if len(n.checkins) != 2 || len(n.checkins[1]) != 1 || n.checkins[1][0].Site != "HDSky" {
+		t.Fatalf("second card = %+v", n.checkins)
+	}
+}
+
+func TestPollPTMessagesFirstRunAndDedupe(t *testing.T) {
+	unread := 1
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/index.php":
+			fmt.Fprintf(w, `<html><body><a href="messages.php">消息 (%d)</a></body></html>`, unread)
+		case r.URL.Path == "/messages.php" && r.URL.Query().Get("action") == "viewmailbox":
+			fmt.Fprint(w, `<html><body><table>`)
+			for i := 1; i <= unread; i++ {
+				fmt.Fprintf(w, `<tr><td><img class="unreadpm" alt="Unread"></td><td><a href="messages.php?action=viewmessage&id=%d">Msg %d</a></td><td>2026-10-23 09:00:00</td></tr>`, i, i)
+			}
+			fmt.Fprint(w, `</table></body></html>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	site, err := ptsite.NewSite(ptsite.SiteConfig{
+		Name: "HDSky", URL: srv.URL, Cookie: "session=x",
+		Signin:   ptsite.SigninConfig{Mode: "off"},
+		Messages: ptsite.MessagesConfig{Mode: "list"},
+	}, nopLogger(), false)
+	if err != nil {
+		t.Fatalf("NewSite: %v", err)
+	}
+
+	cfg := baseConfig()
+	st := newFakePTState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
+	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour, Sites: []ptsite.SiteConfig{site.Config()}}, []*ptsite.Site{site})
+
+	// The first poll records the existing unread message without pushing it.
+	if err := a.pollPTMessages(context.Background()); err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if len(n.siteMessages) != 0 {
+		t.Fatalf("first run pushed %+v", n.siteMessages)
+	}
+
+	// A new message arrives and is pushed once.
+	unread = 2
+	if err := a.pollPTMessages(context.Background()); err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	if len(n.siteMessages) != 1 || len(n.siteMessages[0]) != 1 || n.siteMessages[0][0].Title != "Msg 2" {
+		t.Fatalf("site messages = %+v", n.siteMessages)
+	}
+	if err := a.pollPTMessages(context.Background()); err != nil {
+		t.Fatalf("third poll: %v", err)
+	}
+	if len(n.siteMessages) != 1 {
+		t.Fatalf("duplicate push: %+v", n.siteMessages)
+	}
+}
+
+func TestLegacyPendingDoesNotMarkDayDoneWhenPTSucceeds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><body>今日已签到</body></html>`)
+	}))
+	defer srv.Close()
+
+	site, err := ptsite.NewSite(ptsite.SiteConfig{Name: "HDSky", URL: srv.URL, Cookie: "session=x"}, nopLogger(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site.SetVerifyDelay(0)
+
+	st := newFakePTState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+	a.SetCheckinSites([]checkin.Site{&fakeSite{
+		name: "V2EX",
+		result: checkin.Result{
+			Status:     checkin.StatusPending,
+			Detail:     "08:00 后开放",
+			RetryAfter: time.Now().Add(time.Hour),
+		},
+	}})
+	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour}, []*ptsite.Site{site})
+
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("RunCheckins: %v", err)
+	}
+	if len(n.checkins) != 1 || len(n.checkins[0]) != 1 || n.checkins[0][0].Site != "HDSky" {
+		t.Fatalf("cards = %+v", n.checkins)
+	}
+	if !st.checkin.IsZero() {
+		t.Fatal("a pending legacy site must keep the day open")
+	}
+	if a.checkedInToday() {
+		t.Fatal("day must not be marked done while V2EX is pending")
+	}
+}
+
+func TestPendingCheckinCardIsResentAfterFailure(t *testing.T) {
+	shrinkCheckinCardRetry(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><body>今日已签到</body></html>`)
+	}))
+	defer srv.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+
+	site, err := ptsite.NewSite(ptsite.SiteConfig{Name: "HDSky", URL: srv.URL, Cookie: "session=x"}, nopLogger(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site.SetVerifyDelay(0)
+
+	n := &fakeNotifier{err: errors.New("webhook down")}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
+	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour}, []*ptsite.Site{site})
+
+	if err := a.RunCheckins(context.Background()); err == nil {
+		t.Fatal("expected the first card to fail")
+	}
+	if a.checkedInToday() {
+		t.Fatal("an undelivered card must keep the day open")
+	}
+
+	n.err = nil
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("resend: %v", err)
+	}
+	if len(n.checkins) != 1 || len(n.checkins[0]) != 1 || n.checkins[0][0].Site != "HDSky" {
+		t.Fatalf("resend cards = %+v", n.checkins)
+	}
+	if !a.checkedInToday() {
+		t.Fatal("day should be done after the card is delivered")
+	}
+}
+
+func TestRunCheckinsSplitsForumAndPTCards(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><body>今日已签到</body></html>`)
+	}))
+	defer srv.Close()
+
+	site, err := ptsite.NewSite(ptsite.SiteConfig{Name: "PTOne", URL: srv.URL, Cookie: "session=x"}, nopLogger(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site.SetVerifyDelay(0)
+
+	cfg := baseConfig()
+	cfg.PTCheckinRetries = 0
+	cfg.PTConcurrency = 1
+	st := newFakePTState()
+	n := &fakeNotifier{}
+	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
+	a.SetCheckinSites([]checkin.Site{&fakeSite{name: "V2EX", result: checkin.Result{Status: checkin.StatusSuccess, Detail: "ok"}}})
+	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour}, []*ptsite.Site{site})
+
+	if err := a.RunCheckins(context.Background()); err != nil {
+		t.Fatalf("RunCheckins: %v", err)
+	}
+	if len(n.checkins) != 2 {
+		t.Fatalf("expected forum + PT cards, got %d", len(n.checkins))
+	}
+	if len(n.groups) != 2 || n.groups[0] != "forums" || n.groups[1] != "pt" {
+		t.Fatalf("groups = %v", n.groups)
+	}
+	if len(n.checkins[0]) != 1 || n.checkins[0][0].Site != "V2EX" {
+		t.Fatalf("forum card = %+v", n.checkins[0])
+	}
+	if len(n.checkins[1]) != 1 || n.checkins[1][0].Site != "PTOne" {
+		t.Fatalf("PT card = %+v", n.checkins[1])
 	}
 }

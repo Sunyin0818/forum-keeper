@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -115,12 +116,34 @@ type NoteElement struct {
 	Elements []TextNode `json:"elements"`
 }
 
+// ColumnSetElement lays out the table-like header and result rows. Unlike the
+// Feishu table component, column text wraps on narrow screens instead of being
+// clipped, which matters for long reasons like "签到成功（获得 10 魔力值）".
+type ColumnSetElement struct {
+	Tag               string          `json:"tag"`
+	FlexMode          string          `json:"flex_mode,omitempty"`
+	BackgroundStyle   string          `json:"background_style,omitempty"`
+	HorizontalSpacing string          `json:"horizontal_spacing,omitempty"`
+	Columns           []ColumnElement `json:"columns"`
+}
+
+type ColumnElement struct {
+	Tag           string `json:"tag"`
+	Width         string `json:"width,omitempty"`
+	Weight        int    `json:"weight,omitempty"`
+	VerticalAlign string `json:"vertical_align,omitempty"`
+	Elements      []any  `json:"elements"`
+}
+
 // CheckinEntry is one site's result, as rendered into the daily check-in card.
 // It deliberately carries no markup: Detail is shown as plain_text.
 type CheckinEntry struct {
 	Site   string
 	OK     bool
 	Detail string
+	// Status is the raw check-in status (success, already, pending, uncertain,
+	// failed). It only changes the icon; OK remains the source of truth.
+	Status string
 }
 
 func div(content string) *DivElement {
@@ -255,10 +278,32 @@ func notificationElement(it v2ex.Notification, titles map[int]string) *DivElemen
 	return el
 }
 
-// BuildCheckinCard renders the daily check-in summary.
-//
-// The body is plain_text on purpose: site details can contain URLs, angle
-// brackets and asterisks, all of which lark_md would happily mangle.
+// Check-in card groups. The forum sites and PT sites are delivered as two
+// separate cards so a PT failure never hides behind V2EX/2libra.
+const (
+	CheckinGroupForums = "forums"
+	CheckinGroupPT     = "pt"
+)
+
+// BuildCheckinCardFor renders the check-in card for one group.
+func BuildCheckinCardFor(entries []CheckinEntry, at time.Time, group string) Card {
+	card := BuildCheckinCard(entries, at)
+	label := "每日签到"
+	switch group {
+	case CheckinGroupForums:
+		label = "论坛签到"
+	case CheckinGroupPT:
+		label = "PT 签到"
+	}
+	if card.Header != nil && card.Header.Title != nil {
+		card.Header.Title.Content = strings.Replace(card.Header.Title.Content, "每日签到", label, 1)
+	}
+	return card
+}
+
+// BuildCheckinCard renders the daily check-in summary as a wrapping,
+// table-like list. The Feishu table component clips long cells on mobile, so
+// the check-in report uses column_set rows instead: full details stay visible.
 func BuildCheckinCard(entries []CheckinEntry, at time.Time) Card {
 	okCount := 0
 	for _, e := range entries {
@@ -273,12 +318,11 @@ func BuildCheckinCard(entries []CheckinEntry, at time.Time) Card {
 		template = "orange"
 		title = fmt.Sprintf("⚠️ 每日签到 · %d/%d 成功", okCount, len(entries))
 	}
+	if len(entries) > 1 && okCount == 0 {
+		template = "red"
+	}
 	if len(entries) == 1 {
-		icon := "✅"
-		if !entries[0].OK {
-			icon = "❌"
-		}
-		title = fmt.Sprintf("%s 每日签到 · %s", icon, entries[0].Site)
+		title = fmt.Sprintf("%s 每日签到 · %s", checkinIcon(entries[0]), entries[0].Site)
 	}
 
 	card := Card{
@@ -286,28 +330,73 @@ func BuildCheckinCard(entries []CheckinEntry, at time.Time) Card {
 		Header: &CardHeader{Template: template, Title: plain(title)},
 	}
 
-	var sb strings.Builder
-	for i, e := range entries {
-		if i > 0 {
-			sb.WriteString("\n")
-		}
-		icon := "✅"
-		if !e.OK {
-			icon = "❌"
-		}
-		sb.WriteString(icon)
-		sb.WriteString(" ")
-		sb.WriteString(e.Site)
-		sb.WriteString("\n")
-		sb.WriteString("    └ ")
-		sb.WriteString(firstLineOr(e.Detail, "无详情"))
+	ordered := make([]CheckinEntry, len(entries))
+	copy(ordered, entries)
+	// Keep the success list scannable; failures/pending go last.
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].OK && !ordered[j].OK
+	})
+
+	if len(ordered) > 1 {
+		card.Elements = append(card.Elements, &DivElement{
+			Tag: "div",
+			Text: &TextNode{
+				Tag:     "lark_md",
+				Content: fmt.Sprintf("**%d** 成功 · **%d** 失败 · 共 **%d** 个站点", okCount, len(ordered)-okCount, len(ordered)),
+			},
+		})
+		card.Elements = append(card.Elements, checkinTableHeader())
+	}
+
+	for _, e := range ordered {
+		card.Elements = append(card.Elements, checkinRow(e))
 	}
 
 	card.Elements = append(card.Elements,
-		&DivElement{Tag: "div", Text: &TextNode{Tag: "plain_text", Content: sb.String()}},
 		&NoteElement{Tag: "note", Elements: []TextNode{{Tag: "plain_text", Content: "签到时间 " + at.Local().Format("2006-01-02 15:04:05")}}},
 	)
 	return card
+}
+
+func checkinTableHeader() *ColumnSetElement {
+	return &ColumnSetElement{
+		Tag:               "column_set",
+		FlexMode:          "none",
+		BackgroundStyle:   "grey",
+		HorizontalSpacing: "default",
+		Columns: []ColumnElement{
+			tableColumn(1, &DivElement{Tag: "div", Text: &TextNode{Tag: "lark_md", Content: "**站点**"}}),
+			tableColumn(2, &DivElement{Tag: "div", Text: &TextNode{Tag: "lark_md", Content: "**结果**"}}),
+		},
+	}
+}
+
+func checkinRow(e CheckinEntry) *ColumnSetElement {
+	return &ColumnSetElement{
+		Tag:               "column_set",
+		FlexMode:          "none",
+		HorizontalSpacing: "default",
+		Columns: []ColumnElement{
+			tableColumn(1, &DivElement{
+				Tag:  "div",
+				Text: &TextNode{Tag: "lark_md", Content: checkinIcon(e) + " **" + escapeMarkdown(e.Site) + "**"},
+			}),
+			tableColumn(2, &DivElement{
+				Tag:  "div",
+				Text: &TextNode{Tag: "plain_text", Content: cleanCheckinDetail(e.Detail)},
+			}),
+		},
+	}
+}
+
+func tableColumn(weight int, element any) ColumnElement {
+	return ColumnElement{
+		Tag:           "column",
+		Width:         "weighted",
+		Weight:        weight,
+		VerticalAlign: "center",
+		Elements:      []any{element},
+	}
 }
 
 // firstLineOr collapses whitespace and falls back when the detail is empty.
@@ -317,6 +406,38 @@ func firstLineOr(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// cleanCheckinDetail keeps the card readable: transport errors are reduced to
+// a short reason instead of a raw URL + IPv6 address, and everything else is
+// capped to one compact line.
+func cleanCheckinDetail(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" {
+		return "无详情"
+	}
+	lower := strings.ToLower(s)
+	switch {
+	case strings.Contains(lower, "i/o timeout"),
+		strings.Contains(lower, "deadline exceeded"),
+		strings.Contains(lower, "timeout"):
+		if strings.Contains(s, "签到请求失败") {
+			return "签到请求失败：网络超时"
+		}
+		if strings.Contains(s, "请求失败") {
+			return "请求失败：网络超时"
+		}
+		return "网络超时"
+	case strings.Contains(lower, "connection refused"):
+		return "连接被拒绝"
+	case strings.Contains(lower, "connection reset"):
+		return "连接被重置"
+	case strings.Contains(lower, "network is unreachable"):
+		return "网络不可达"
+	case strings.Contains(lower, "no such host"):
+		return "域名解析失败"
+	}
+	return truncate(s, 100)
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -401,4 +522,97 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return strings.TrimSpace(string(runes[:max])) + "…"
+}
+
+// SiteMessage is one tracker inbox entry rendered into a site-message card.
+// Body is plain text: it is rendered with plain_text, not lark_md, so tracker
+// HTML can never break the card or leak markup.
+type SiteMessage struct {
+	Site  string
+	Title string
+	Date  string
+	Body  string
+	URL   string
+}
+
+const (
+	maxSiteMessages  = 10
+	maxSiteBodyRunes = 500
+)
+
+// BuildSiteMessagesCard renders new tracker inbox messages. Several sites are
+// aggregated into one card to stay friendly to the Feishu webhook rate limit.
+func BuildSiteMessagesCard(messages []SiteMessage, at time.Time) Card {
+	card := Card{Config: CardConfig{WideScreenMode: true}}
+	title := fmt.Sprintf("📬 站点消息 · %d 条", len(messages))
+	if len(messages) == 1 {
+		title = "📬 " + firstLineOr(messages[0].Site, "站点") + " · " + firstLineOr(messages[0].Title, "新消息")
+	}
+	card.Header = &CardHeader{Template: "blue", Title: plain(title)}
+
+	shown := messages
+	truncated := 0
+	if len(shown) > maxSiteMessages {
+		truncated = len(shown) - maxSiteMessages
+		shown = shown[:maxSiteMessages]
+	}
+
+	single := len(shown) == 1
+	for i, m := range shown {
+		if i > 0 {
+			card.Elements = append(card.Elements, hr())
+		}
+		var sb strings.Builder
+		// For a single message the site/title already live in the header; the
+		// body starts at the timestamp so nothing is repeated.
+		if !single {
+			sb.WriteString(firstLineOr(m.Site, "站点"))
+			if t := firstLineOr(m.Title, ""); t != "" {
+				sb.WriteString(" · ")
+				sb.WriteString(t)
+			}
+		}
+		if d := firstLineOr(m.Date, ""); d != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(d)
+		}
+		if b := strings.TrimSpace(m.Body); b != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(truncate(b, maxSiteBodyRunes))
+		}
+		el := &DivElement{Tag: "div", Text: &TextNode{Tag: "plain_text", Content: sb.String()}}
+		if m.URL != "" {
+			el.Extra = &Button{Tag: "button", Text: plain("查看消息"), Type: "default", URL: m.URL}
+		}
+		card.Elements = append(card.Elements, el)
+	}
+
+	note := fmt.Sprintf("共 %d 条", len(messages))
+	if truncated > 0 {
+		note = fmt.Sprintf("还有 %d 条未显示", truncated)
+	}
+	note += " · " + at.Local().Format("2006-01-02 15:04:05")
+	card.Elements = append(card.Elements, &NoteElement{
+		Tag:      "note",
+		Elements: []TextNode{{Tag: "plain_text", Content: note}},
+	})
+	return card
+}
+
+func checkinIcon(e CheckinEntry) string {
+	if e.OK {
+		return "✅"
+	}
+	switch e.Status {
+	case "pending":
+		return "⏳"
+	case "uncertain":
+		return "⚠️"
+	default:
+		return "❌"
+	}
 }

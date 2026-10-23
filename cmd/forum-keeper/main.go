@@ -25,6 +25,8 @@ func main() {
 	var (
 		once          = flag.Bool("once", false, "run a single poll and exit")
 		checkin       = flag.Bool("checkin", false, "run the daily check-in once and exit")
+		ptMessages    = flag.Bool("pt-messages", false, "poll PT inboxes once and exit")
+		checkConfig   = flag.Bool("check-config", false, "validate configuration and print the resolved sites, then exit")
 		dryRun        = flag.Bool("dry-run", false, "log what would be pushed without sending or mutating state")
 		notifyStartup = flag.Bool("notify-startup", false, "send the startup message and exit (webhook smoke test)")
 		showVersion   = flag.Bool("version", false, "print version and exit")
@@ -60,10 +62,18 @@ func main() {
 	}()
 	service.SetVersion(version)
 
+	if *checkConfig {
+		if err := service.CheckConfig(); err != nil {
+			logger.Error("config check failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Fail fast on an invalid token; tolerate transient API outages. Skipped
 	// when reminders are off (no V2EX_TOKEN), so a check-in-only deployment
 	// does not fail on a credential it does not use.
-	if service.RemindersEnabled() {
+	if service.RemindersEnabled() && !*ptMessages {
 		if err := service.CheckToken(ctx); err != nil {
 			if errors.Is(err, v2ex.ErrUnauthorized) {
 				logger.Error("V2EX rejected the token; rotate V2EX_TOKEN", "err", err)
@@ -96,6 +106,14 @@ func main() {
 	if *checkin {
 		if err := service.RunCheckins(ctx); err != nil {
 			logger.Error("check-in failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *ptMessages {
+		if err := service.PollPTMessages(ctx); err != nil {
+			logger.Error("PT message poll failed", "err", err)
 			os.Exit(1)
 		}
 		return

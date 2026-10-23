@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadCheckinDefaults(t *testing.T) {
@@ -84,5 +85,37 @@ func TestLoadRejectsInvalidCheckinTime(t *testing.T) {
 
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CHECKIN_TIME") {
 		t.Fatalf("expected a CHECKIN_TIME error, got %v", err)
+	}
+}
+
+func TestLoadAllowsPTOnly(t *testing.T) {
+	t.Setenv("FEISHU_WEBHOOK", "https://example.invalid/hook")
+	t.Setenv("PT_SITES_FILE", "/tmp/pt-sites.json")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PTPollInterval != 2*time.Hour {
+		t.Errorf("PT poll = %s, want 2h", cfg.PTPollInterval)
+	}
+	if cfg.PTFirstRun != "skip" || cfg.PTCheckinRetries != 2 || cfg.PTConcurrency != 4 {
+		t.Errorf("PT defaults = %q %d %d", cfg.PTFirstRun, cfg.PTCheckinRetries, cfg.PTConcurrency)
+	}
+}
+
+func TestLoadRejectsBadPTConfig(t *testing.T) {
+	t.Setenv("FEISHU_WEBHOOK", "https://example.invalid/hook")
+	t.Setenv("PT_SITES_FILE", "/tmp/pt-sites.json")
+	t.Setenv("PT_POLL_INTERVAL", "30s")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PT_POLL_INTERVAL") {
+		t.Fatalf("expected PT_POLL_INTERVAL error, got %v", err)
+	}
+
+	t.Setenv("PT_POLL_INTERVAL", "1h")
+	t.Setenv("PT_FIRST_RUN", "sometimes")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PT_FIRST_RUN") {
+		t.Fatalf("expected PT_FIRST_RUN error, got %v", err)
 	}
 }

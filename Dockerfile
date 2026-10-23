@@ -3,7 +3,7 @@
 
 # The builder runs on the *build* platform and cross-compiles for the target,
 # so a linux/arm64 image does not need QEMU to run the whole Go toolchain.
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS build
 
 ARG TARGETOS
 ARG TARGETARCH

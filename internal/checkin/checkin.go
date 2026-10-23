@@ -37,6 +37,10 @@ const (
 	// StatusFailed means the credential was rejected or the request did not
 	// produce a confirmed sign-in.
 	StatusFailed Status = "failed"
+	// StatusUncertain means the request was sent but the site did not show a
+	// result we can trust (for example a POST whose response was lost). It is
+	// not a success: the caller retries later, and a repeat is idempotent.
+	StatusUncertain Status = "uncertain"
 )
 
 // Result is the outcome of one site's sign-in.

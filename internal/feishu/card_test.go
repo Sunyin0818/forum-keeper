@@ -233,30 +233,16 @@ func TestBuildCheckinCard(t *testing.T) {
 	if !strings.Contains(card.Header.Title.Content, "1/2") {
 		t.Fatalf("unexpected title %q", card.Header.Title.Content)
 	}
-	if len(card.Elements) != 2 {
-		t.Fatalf("expected body + note, got %d elements", len(card.Elements))
-	}
-
-	div, ok := card.Elements[0].(*DivElement)
-	if !ok {
-		t.Fatalf("first element is %T", card.Elements[0])
-	}
-	// plain_text keeps URLs and markup-looking detail text from being parsed.
-	if div.Text.Tag != "plain_text" {
-		t.Fatalf("check-in body should be plain_text, got %q", div.Text.Tag)
-	}
-	for _, want := range []string{"V2EX", "获得 18 铜币", "2libra", "HTTP 401"} {
-		if !strings.Contains(div.Text.Content, want) {
-			t.Errorf("body missing %q:\n%s", want, div.Text.Content)
-		}
-	}
 
 	b, err := json.Marshal(card)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(string(b), "签到时间 2026-10-02 06:00:05") {
-		t.Fatalf("unexpected card JSON: %s", b)
+	body := string(b)
+	for _, want := range []string{"V2EX", "获得 18 铜币", "2libra", "HTTP 401", `"tag":"column_set"`, "站点", "结果", "签到时间 2026-10-02 06:00:05"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("card missing %q:\n%s", want, body)
+		}
 	}
 }
 
@@ -276,9 +262,12 @@ func TestBuildCheckinCardSingleSite(t *testing.T) {
 	if card.Header.Title.Content != "✅ 每日签到 · V2EX" {
 		t.Fatalf("unexpected title %q", card.Header.Title.Content)
 	}
-	div := card.Elements[0].(*DivElement)
-	if !strings.Contains(div.Text.Content, "无详情") {
-		t.Fatalf("empty detail should fall back: %q", div.Text.Content)
+	b, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), "无详情") {
+		t.Fatalf("empty detail should fall back: %s", b)
 	}
 }
 
@@ -313,5 +302,80 @@ func TestBuildStartupCard(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "启动时间 2026-09-29 15:30:00") {
 		t.Fatalf("unexpected card JSON: %s", b)
+	}
+}
+
+func TestBuildSiteMessagesCard(t *testing.T) {
+	messages := []SiteMessage{{
+		Site:  "HDSky",
+		Title: "账号安全提醒",
+		Date:  "2026-10-23 09:00:00",
+		Body:  "第一行\n第二行 <b>不是标签</b>",
+		URL:   "https://hdsky.me/messages.php?action=viewmessage&id=42",
+	}}
+	card := BuildSiteMessagesCard(messages, time.Now())
+	if card.Header == nil || !strings.Contains(card.Header.Title.Content, "HDSky") {
+		t.Fatalf("header = %+v", card.Header)
+	}
+	b, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	body := string(b)
+	if !strings.Contains(body, "账号安全提醒") || !strings.Contains(body, "第一行") {
+		t.Fatalf("message missing: %s", body)
+	}
+	// The body is plain_text; angle brackets are data, not markup.
+	if !strings.Contains(body, "不是标签") {
+		t.Fatalf("body missing: %s", body)
+	}
+	if strings.Contains(body, `"tag":"lark_md"`) {
+		t.Fatalf("message body must not use lark_md: %s", body)
+	}
+}
+
+func TestCleanCheckinDetail(t *testing.T) {
+	cases := map[string]string{
+		`请求失败：Get "https://www.v2ex.com/mission/daily": dial tcp [2a03:2880::1]:443: i/o timeout`: "请求失败：网络超时",
+		`签到请求失败：dial tcp 1.2.3.4:443: i/o timeout`:                                                "签到请求失败：网络超时",
+		`dial tcp 1.2.3.4:443: connect: connection refused`:                                       "连接被拒绝",
+		`dial tcp: lookup example.com: no such host`:                                              "域名解析失败",
+		`Cookie 已失效或无权限（HTTP 401）`:                                                                "Cookie 已失效或无权限（HTTP 401）",
+	}
+	for in, want := range cases {
+		if got := cleanCheckinDetail(in); got != want {
+			t.Errorf("cleanCheckinDetail(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := cleanCheckinDetail(strings.Repeat("长", 200)); len([]rune(got)) > 101 {
+		t.Fatalf("detail was not truncated: %d runes", len([]rune(got)))
+	}
+}
+
+func TestBuildCheckinCardCompact(t *testing.T) {
+	entries := []CheckinEntry{
+		{Site: "V2EX", OK: false, Detail: `请求失败：Get "https://www.v2ex.com/mission/daily": dial tcp [2a03:2880:f10d:183:face:b00c:0:25de]:443: i/o timeout`},
+		{Site: "学校", OK: true, Detail: "今日已签到"},
+		{Site: "CarPT", OK: true, Detail: "签到成功（获得 10 魔力值）"},
+	}
+	card := BuildCheckinCard(entries, time.Now())
+	b, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	body := string(b)
+	if strings.Contains(body, "https://") || strings.Contains(body, "2a03:") {
+		t.Fatalf("raw transport error leaked into card:\n%s", body)
+	}
+	for _, want := range []string{"V2EX", "请求失败：网络超时", "学校", "今日已签到", "CarPT", "签到成功"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("card missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Count(body, `"tag":"column_set"`) < 4 {
+		t.Fatalf("expected header + one row per site:\n%s", body)
+	}
+	if !strings.Contains(body, "签到成功（获得 10 魔力值）") {
+		t.Fatalf("full detail was clipped:\n%s", body)
 	}
 }
