@@ -40,8 +40,6 @@ HDSky · 账号安全提醒
 
 ### 2. 准备部署目录
 
-在仓库根目录执行：
-
 ```bash
 mkdir -p forum-keeper
 cp compose.yaml config.example.yaml forum-keeper/
