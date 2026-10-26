@@ -52,7 +52,7 @@ func NewSite(cfg SiteConfig, log *slog.Logger, dryRun bool) (*Site, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	if err := cfg.normalize(); err != nil {
+	if err := cfg.Normalize(); err != nil {
 		return nil, err
 	}
 	jar, err := cookiejar.New(nil)

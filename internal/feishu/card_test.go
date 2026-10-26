@@ -379,3 +379,34 @@ func TestBuildCheckinCardCompact(t *testing.T) {
 		t.Fatalf("full detail was clipped:\n%s", body)
 	}
 }
+
+// A reply's text is written by another V2EX user. lark_md would render an
+// injected link or <at id=all> inside the group card, so notifications must be
+// plain_text.
+func TestBuildCardRendersNotificationAsPlainText(t *testing.T) {
+	it := v2ex.Notification{
+		ID:      1,
+		Text:    replyText,
+		Member:  v2ex.Member{Username: "alice"},
+		Payload: "[点我](https://evil.example) <at id=all></at> **加粗**",
+	}
+	card := BuildCard([]v2ex.Notification{it}, nil)
+	b, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	body := string(b)
+	if strings.Contains(body, `"tag":"lark_md"`) {
+		t.Fatalf("notification card must not use lark_md: %s", body)
+	}
+	if !strings.Contains(body, "[点我](https://evil.example)") {
+		t.Fatalf("plain text content should be preserved verbatim: %s", body)
+	}
+	el, ok := card.Elements[0].(*DivElement)
+	if !ok {
+		t.Fatalf("first element is %T, want *DivElement", card.Elements[0])
+	}
+	if el.Text.Tag != "plain_text" {
+		t.Fatalf("notification body is %q, want plain_text", el.Text.Tag)
+	}
+}

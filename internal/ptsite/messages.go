@@ -315,27 +315,60 @@ func (s *Site) messageBody(doc *goquery.Document) string {
 	if body := doc.Find(".layui-card-body").First(); body.Length() > 0 {
 		return nodeText(body)
 	}
-	// Standard NexusPHP: the detail table follows the <h1>.
-	table := doc.Find("h1").First().NextAllFiltered("table").First()
-	if table.Length() > 0 {
-		rows := table.Find("tr")
-		if rows.Length() >= 3 {
-			if body := rows.Eq(2).Find("td").First(); body.Length() > 0 {
-				return nodeText(body)
-			}
-		}
-		if body := table.Find("td.rowfollow").Last(); body.Length() > 0 {
-			return nodeText(body)
-		}
+	// Standard NexusPHP: the detail table follows the <h1>, but some themes
+	// put the inbox navigation table in between. Pick the table that actually
+	// holds the message header instead of the first one after the heading.
+	table, ok := messageTable(doc)
+	if !ok {
+		return ""
 	}
-	// Last resort: the longest cell on the page.
-	var best string
-	doc.Find("td").Each(func(_ int, td *goquery.Selection) {
-		if text := nodeText(td); len([]rune(text)) > len([]rune(best)) {
-			best = text
+	title := normalizeSpace(doc.Find("h1").First().Text())
+	var parts []string
+	table.Find("tr").Each(func(i int, row *goquery.Selection) {
+		// Row 0 is the "自 / 日期" header, row 1 is sender/date.
+		if i < 2 || isToolbarRow(row) {
+			return
 		}
+		text := cleanBlock(nodeText(row))
+		// The subject is repeated under the <h1>; the body starts after it.
+		if text == "" || normalizeSpace(text) == title {
+			return
+		}
+		parts = append(parts, text)
 	})
-	return best
+	return strings.Join(parts, "\n")
+}
+
+func messageTable(doc *goquery.Document) (*goquery.Selection, bool) {
+	// The message table carries the "自 / 日期" header cells. Prefer it over
+	// any navigation table elsewhere on the page.
+	var found *goquery.Selection
+	doc.Find("table").EachWithBreak(func(_ int, table *goquery.Selection) bool {
+		if table.Find("td.colhead").Length() >= 2 {
+			found = table
+			return false
+		}
+		return true
+	})
+	if found != nil {
+		return found, true
+	}
+	// Themes without colhead: fall back to the first substantial table after
+	// the heading.
+	doc.Find("h1").First().NextAllFiltered("table").EachWithBreak(func(_ int, table *goquery.Selection) bool {
+		if table.Find("tr").Length() >= 3 {
+			found = table
+			return false
+		}
+		return true
+	})
+	return found, found != nil
+}
+
+// isToolbarRow reports whether a row is the delete/reply/forward controls.
+// Their labels are links, not message content, and must never reach a card.
+func isToolbarRow(row *goquery.Selection) bool {
+	return row.Find("form input[name='action'], a[href*='deletemessage'], a[href*='replymessage'], a[href*='forwardmessage']").Length() > 0
 }
 
 func nodeText(sel *goquery.Selection) string {

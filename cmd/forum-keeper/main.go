@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Sunyin0818/forum-keeper/internal/app"
 	"github.com/Sunyin0818/forum-keeper/internal/config"
@@ -38,13 +39,19 @@ func main() {
 		return
 	}
 
-	cfg, err := config.Load()
+	cfg, err := config.Load(configFile())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(2)
 	}
 
-	logger := newLogger(cfg.LogLevel)
+	// The configuration owns the time zone: the schedule, the card timestamps
+	// and the log timestamps all follow checkin.timezone.
+	if loc, err := cfg.Location(); err == nil {
+		time.Local = loc
+	}
+
+	logger := newLogger(cfg.Server.LogLevel)
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -139,4 +146,18 @@ func newLogger(level string) *slog.Logger {
 	}
 	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
 	return slog.New(handler)
+}
+
+// configFile returns the path of the configuration file. CONFIG_FILE points at
+// it; without it the conventional locations are tried.
+func configFile() string {
+	if p := strings.TrimSpace(os.Getenv("CONFIG_FILE")); p != "" {
+		return p
+	}
+	for _, p := range []string{"config.yaml", "config/config.yaml", "/config/config.yaml"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }

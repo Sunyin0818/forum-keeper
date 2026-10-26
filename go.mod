@@ -6,6 +6,7 @@ require (
 	github.com/PuerkitoBio/goquery v1.13.0
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/net v0.61.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

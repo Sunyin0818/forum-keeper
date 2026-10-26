@@ -7,10 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
 
 	"github.com/Sunyin0818/forum-keeper/internal/checkin"
 )
@@ -321,22 +322,32 @@ func TestCheckInAlreadyWithTurnstileWidget(t *testing.T) {
 	}
 }
 
-func TestLoadResolvesCookieEnvOnce(t *testing.T) {
+// A site may take its cookie from an environment variable instead of the
+// file. The lookup happens once, when the site rules are normalized.
+func TestNormalizeResolvesCookieEnv(t *testing.T) {
 	t.Setenv("PT_TEST_COOKIE", "session=from-env")
-	path := t.TempDir() + "/pt-sites.json"
-	content := `{"sites":[{"name":"X","url":"https://example.invalid","cookie_env":"PT_TEST_COOKIE","signin":{"mode":"off"},"messages":{"mode":"list"}}]}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
+	site := SiteConfig{
+		Name:      "X",
+		URL:       "https://example.invalid",
+		CookieEnv: "PT_TEST_COOKIE",
+		Signin:    SigninConfig{Mode: "off"},
+		Messages:  MessagesConfig{Mode: "list"},
 	}
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	if err := site.Normalize(); err != nil {
+		t.Fatalf("Normalize: %v", err)
 	}
-	if cfg.Sites[0].Cookie != "session=from-env" {
-		t.Fatalf("cookie = %q", cfg.Sites[0].Cookie)
+	if site.Cookie != "session=from-env" {
+		t.Fatalf("cookie = %q", site.Cookie)
 	}
-	if _, err := NewSite(cfg.Sites[0], testLogger(), false); err != nil {
-		t.Fatalf("NewSite after Load: %v", err)
+	if _, err := NewSite(site, testLogger(), false); err != nil {
+		t.Fatalf("NewSite after Normalize: %v", err)
+	}
+}
+
+func TestNormalizeRejectsMissingCookie(t *testing.T) {
+	site := SiteConfig{URL: "https://example.invalid"}
+	if err := site.Normalize(); err == nil {
+		t.Fatal("expected a cookie error")
 	}
 }
 
@@ -539,5 +550,47 @@ func TestCheckInMaintenance(t *testing.T) {
 	res := newTestSite(t, srv, nil).CheckIn(context.Background())
 	if res.Status != checkin.StatusFailed || !strings.Contains(res.Detail, "维护") {
 		t.Fatalf("status = %s, detail = %s", res.Status, res.Detail)
+	}
+}
+
+// CSPT's theme puts the inbox navigation table between the <h1> and the
+// message table. The previous heuristic took the first table after the
+// heading, fell through to "longest cell", and sent the delete/reply/forward
+// toolbar to the card as the message body.
+func TestMessageBodyIgnoresToolbarAndNavTable(t *testing.T) {
+	const page = `<html><body>
+<h1>停机补偿</h1>
+<table class="main"><tr><td class="embedded">收件箱 发件箱</td></tr></table>
+<table width="737">
+  <tr><td class="colhead">自</td><td class="colhead">日期</td></tr>
+  <tr><td class="rowfollow">cspt</td><td class="rowfollow">刚刚 0</td></tr>
+  <tr><td colspan="2" align="left">停机补偿</td></tr>
+  <tr>
+    <td align="left"><form action="messages.php" method="post"><input type="hidden" name="action" value="moveordel"></form></td>
+    <td align="right"><a href="messages.php?action=deletemessage&amp;id=1">删除</a>
+      <a href="messages.php?action=replymessage&amp;id=1">回复</a>
+      <a href="messages.php?action=forwardmessage&amp;id=1">转发短讯</a></td>
+  </tr>
+</table>
+</body></html>`
+
+	site := &Site{}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(page))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := site.messageBody(doc); got != "" {
+		t.Fatalf("subject-only message body = %q, want empty", got)
+	}
+
+	withBody := strings.Replace(page, `<tr><td colspan="2" align="left">停机补偿</td></tr>`,
+		`<tr><td colspan="2" align="left">停机补偿</td></tr>
+  <tr><td colspan="2" align="left">补偿内容<br>第二行</td></tr>`, 1)
+	doc, err = goquery.NewDocumentFromReader(strings.NewReader(withBody))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got, want := site.messageBody(doc), "补偿内容\n第二行"; got != want {
+		t.Fatalf("message body = %q, want %q", got, want)
 	}
 }

@@ -146,13 +146,6 @@ type CheckinEntry struct {
 	Status string
 }
 
-func div(content string) *DivElement {
-	return &DivElement{
-		Tag:  "div",
-		Text: &TextNode{Tag: "lark_md", Content: content},
-	}
-}
-
 func hr() map[string]string {
 	return map[string]string{"tag": "hr"}
 }
@@ -232,7 +225,7 @@ func BuildStartupCard(lines []string, at time.Time) Card {
 	})
 	card.Elements = append(card.Elements, &NoteElement{
 		Tag:      "note",
-		Elements: []TextNode{{Tag: "plain_text", Content: "启动时间 " + at.Local().Format("2006-01-02 15:04:05")}},
+		Elements: []TextNode{{Tag: "plain_text", Content: "启动时间 " + at.Format("2006-01-02 15:04:05")}},
 	})
 	return card
 }
@@ -243,9 +236,12 @@ func notificationElement(it v2ex.Notification, titles map[int]string) *DivElemen
 	if user == "" {
 		user = "someone"
 	}
-	sb.WriteString("**@")
+	// Everything here is attacker-controlled (any V2EX user can reply to or
+	// mention the account), so the element is plain_text: lark_md would render
+	// injected links and <at id=all> mentions inside the trusted group card.
+	sb.WriteString("@")
 	sb.WriteString(user)
-	sb.WriteString("** ")
+	sb.WriteString(" ")
 	sb.WriteString(actionLabel(it))
 
 	topicID := TopicID(it)
@@ -258,15 +254,15 @@ func notificationElement(it v2ex.Notification, titles map[int]string) *DivElemen
 		}
 		if title != "" {
 			sb.WriteString("\n📄 ")
-			sb.WriteString(escapeMarkdown(title))
+			sb.WriteString(title)
 		}
 	}
 	if s := Snippet(it); s != "" {
 		sb.WriteString("\n> ")
-		sb.WriteString(escapeMarkdown(s))
+		sb.WriteString(s)
 	}
 
-	el := div(sb.String())
+	el := &DivElement{Tag: "div", Text: plain(sb.String())}
 	if topicID > 0 {
 		el.Extra = &Button{
 			Tag:  "button",
@@ -353,7 +349,7 @@ func BuildCheckinCard(entries []CheckinEntry, at time.Time) Card {
 	}
 
 	card.Elements = append(card.Elements,
-		&NoteElement{Tag: "note", Elements: []TextNode{{Tag: "plain_text", Content: "签到时间 " + at.Local().Format("2006-01-02 15:04:05")}}},
+		&NoteElement{Tag: "note", Elements: []TextNode{{Tag: "plain_text", Content: "签到时间 " + at.Format("2006-01-02 15:04:05")}}},
 	)
 	return card
 }
@@ -595,7 +591,7 @@ func BuildSiteMessagesCard(messages []SiteMessage, at time.Time) Card {
 	if truncated > 0 {
 		note = fmt.Sprintf("还有 %d 条未显示", truncated)
 	}
-	note += " · " + at.Local().Format("2006-01-02 15:04:05")
+	note += " · " + at.Format("2006-01-02 15:04:05")
 	card.Elements = append(card.Elements, &NoteElement{
 		Tag:      "note",
 		Elements: []TextNode{{Tag: "plain_text", Content: note}},

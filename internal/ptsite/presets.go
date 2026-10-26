@@ -2,30 +2,31 @@ package ptsite
 
 import (
 	"embed"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 )
 
-//go:embed presets.json
+//go:embed presets.yaml
 var presetFS embed.FS
 
 // Preset is a reusable set of sign-in/message rules keyed by domain. A site
 // config only needs to override the fields that differ.
 type Preset struct {
-	Name string `json:"name"`
+	Name string `yaml:"name"`
 	// Title is the friendly label used in cards/logs when the site config
 	// does not set a name. Name remains the stable preset identifier.
-	Title    string         `json:"title,omitempty"`
-	Hosts    []string       `json:"hosts"`
-	Signin   SigninConfig   `json:"signin,omitempty"`
-	Messages MessagesConfig `json:"messages,omitempty"`
+	Title    string         `yaml:"title,omitempty"`
+	Hosts    []string       `yaml:"hosts"`
+	Signin   SigninConfig   `yaml:"signin,omitempty"`
+	Messages MessagesConfig `yaml:"messages,omitempty"`
 }
 
 type presetFile struct {
-	Presets []Preset `json:"presets"`
+	Presets []Preset `yaml:"presets"`
 }
 
 var (
@@ -36,13 +37,15 @@ var (
 
 func loadPresets() ([]Preset, error) {
 	presetsOnce.Do(func() {
-		raw, err := presetFS.ReadFile("presets.json")
+		raw, err := presetFS.ReadFile("presets.yaml")
 		if err != nil {
 			presetsErr = fmt.Errorf("ptsite: read presets: %w", err)
 			return
 		}
 		var file presetFile
-		if err := json.Unmarshal(raw, &file); err != nil {
+		dec := yaml.NewDecoder(strings.NewReader(string(raw)))
+		dec.KnownFields(true)
+		if err := dec.Decode(&file); err != nil {
 			presetsErr = fmt.Errorf("ptsite: parse presets: %w", err)
 			return
 		}

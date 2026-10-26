@@ -1,4 +1,4 @@
-# 云端运行定义。部署与升级见 README「部署到云端」。
+# 云端运行定义。部署与升级见 README「部署」。
 name: forum-keeper
 
 services:
@@ -7,22 +7,17 @@ services:
     image: ghcr.io/sunyin0818/forum-keeper:0.6.0
     container_name: forum-keeper
     restart: unless-stopped
-    # raw：cookie 值里含 `$`，默认会被 compose 当变量插值静默吞掉。
-    # 用 raw 后可以整行粘贴浏览器 cookie，不必手工转义 `$$`。
-    env_file:
-      - path: config/.env
-        format: raw
     environment:
+      # 配置文件只读挂载在 /config；运行状态只写 /data。
+      CONFIG_FILE: /config/config.yaml
       STATE_PATH: /data/state.db
-      # 配置只读挂载在 /config；运行状态只写 /data。
-      PT_SITES_FILE: /config/pt-sites.json
       # 影响签到调度与卡片/日志时间戳；docker 默认 UTC。
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # 状态库，丢了会重推历史提醒。
       - data:/data
-      # 配置目录：.env（cookie/webhook）和 pt-sites.json（站点列表）。
-      - ./config:/config:ro
+      # 配置文件：config.yaml（含 webhook/cookie）。
+      - ./config.yaml:/config/config.yaml:ro
     # 应用只写 /data，所以根文件系统只读、/tmp 用 tmpfs。
     read_only: true
     tmpfs:

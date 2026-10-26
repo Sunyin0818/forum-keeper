@@ -29,16 +29,10 @@ func nopLogger() *slog.Logger {
 }
 
 func baseConfig() *config.Config {
-	return &config.Config{
-		V2EXToken:              "test-token",
-		V2EXBaseURL:            "https://example.invalid/api/v2",
-		FirstRun:               config.FirstRunSkip,
-		MaxPages:               3,
-		PollInterval:           time.Minute,
-		AlertOnError:           true,
-		StartupMessage:         true,
-		StartupMessageCooldown: 10 * time.Minute,
-	}
+	cfg := config.Default()
+	cfg.V2EX.Token = "test-token"
+	cfg.V2EX.APIBaseURL = "https://example.invalid/api/v2"
+	return &cfg
 }
 
 type fakeFetcher struct {
@@ -256,7 +250,7 @@ func TestFirstRunRecordsWithoutPushing(t *testing.T) {
 
 func TestFirstRunPushMode(t *testing.T) {
 	cfg := baseConfig()
-	cfg.FirstRun = config.FirstRunPush
+	cfg.Reminders.FirstRun = config.FirstRunPush
 
 	f := &fakeFetcher{pages: map[int][]v2ex.Notification{1: notifs(1, 2)}}
 	n := &fakeNotifier{}
@@ -314,7 +308,7 @@ func TestPushFailureDoesNotMarkSeen(t *testing.T) {
 
 func TestFilterTypesPushesMatchingButMarksAll(t *testing.T) {
 	cfg := baseConfig()
-	cfg.FilterTypes = []string{"mention"}
+	cfg.Reminders.FilterTypes = []string{"mention"}
 
 	f := &fakeFetcher{pages: map[int][]v2ex.Notification{1: {
 		{ID: 1, Text: "回复了你的主题"},
@@ -342,7 +336,7 @@ func TestFilterTypesPushesMatchingButMarksAll(t *testing.T) {
 
 func TestMarkReadDeletesPushedNotifications(t *testing.T) {
 	cfg := baseConfig()
-	cfg.MarkRead = true
+	cfg.Reminders.MarkRead = true
 
 	f := &fakeFetcher{pages: map[int][]v2ex.Notification{1: notifs(1, 2)}}
 	st := newFakeState()
@@ -384,8 +378,8 @@ func TestPaginationStopsWhenPageFullyKnown(t *testing.T) {
 
 func TestPaginationRespectsMaxPages(t *testing.T) {
 	cfg := baseConfig()
-	cfg.MaxPages = 2
-	cfg.FirstRun = config.FirstRunPush
+	cfg.Reminders.MaxPages = 2
+	cfg.Reminders.FirstRun = config.FirstRunPush
 
 	f := &fakeFetcher{pages: map[int][]v2ex.Notification{
 		1: fullPage(100, notificationsPageSize),
@@ -409,7 +403,7 @@ func TestPaginationRespectsMaxPages(t *testing.T) {
 
 func TestDryRunNeitherPushesNorMarks(t *testing.T) {
 	cfg := baseConfig()
-	cfg.FirstRun = config.FirstRunPush
+	cfg.Reminders.FirstRun = config.FirstRunPush
 
 	f := &fakeFetcher{pages: map[int][]v2ex.Notification{1: notifs(1, 2)}}
 	st := newFakeState()
@@ -489,7 +483,7 @@ func TestNotifyStartupRespectsCooldown(t *testing.T) {
 
 func TestNotifyStartupForceBypassesCooldownAndToggle(t *testing.T) {
 	cfg := baseConfig()
-	cfg.StartupMessage = false
+	cfg.Notify.Startup = false
 
 	st := newFakeState()
 	st.startup = time.Now()
@@ -506,7 +500,7 @@ func TestNotifyStartupForceBypassesCooldownAndToggle(t *testing.T) {
 
 func TestNotifyStartupDisabled(t *testing.T) {
 	cfg := baseConfig()
-	cfg.StartupMessage = false
+	cfg.Notify.Startup = false
 
 	n := &fakeNotifier{}
 	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, newFakeState(), n)
@@ -673,8 +667,8 @@ func TestRunCheckinsNoSitesIsNoop(t *testing.T) {
 
 func TestCheckinOnStartIsGuardedPerDay(t *testing.T) {
 	cfg := baseConfig()
-	cfg.CheckinOnStart = true
-	cfg.CheckinLocation = time.UTC
+	cfg.Checkin.OnStart = true
+	cfg.Checkin.Timezone = "UTC"
 
 	st := newFakeState()
 	n := &fakeNotifier{}
@@ -699,8 +693,8 @@ func TestCheckinOnStartIsGuardedPerDay(t *testing.T) {
 
 func TestCheckinOnStartSkippedYesterdayRuns(t *testing.T) {
 	cfg := baseConfig()
-	cfg.CheckinOnStart = true
-	cfg.CheckinLocation = time.UTC
+	cfg.Checkin.OnStart = true
+	cfg.Checkin.Timezone = "UTC"
 
 	st := newFakeState()
 	st.checkin = time.Now().UTC().Add(-25 * time.Hour)
@@ -717,7 +711,7 @@ func TestCheckinOnStartSkippedYesterdayRuns(t *testing.T) {
 
 func TestCheckinOnStartDisabled(t *testing.T) {
 	cfg := baseConfig()
-	cfg.CheckinOnStart = false
+	cfg.Checkin.OnStart = false
 
 	n := &fakeNotifier{}
 	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, newFakeState(), n)
@@ -732,7 +726,7 @@ func TestCheckinOnStartDisabled(t *testing.T) {
 
 func TestRemindersDisabledStartupLines(t *testing.T) {
 	cfg := baseConfig()
-	cfg.V2EXToken = ""
+	cfg.V2EX.Token = ""
 
 	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, newFakeState(), &fakeNotifier{})
 	if a.RemindersEnabled() {
@@ -754,12 +748,15 @@ func TestBuildCheckinSitesHonoursCredentials(t *testing.T) {
 		t.Fatalf("no credentials should yield no sites, got %d", len(none))
 	}
 
-	v2only := buildCheckinSites(&config.Config{V2EXCookie: "A2=x"})
+	v2only := buildCheckinSites(&config.Config{V2EX: config.V2EXConfig{Cookie: "A2=x"}})
 	if len(v2only) != 1 {
 		t.Fatalf("expected 1 site, got %d", len(v2only))
 	}
 
-	both := buildCheckinSites(&config.Config{V2EXCookie: "A2=x", LibraCookie: "access_token=y"})
+	both := buildCheckinSites(&config.Config{
+		V2EX:  config.V2EXConfig{Cookie: "A2=x"},
+		Libra: config.LibraConfig{Cookie: "access_token=y"},
+	})
 	if len(both) != 2 {
 		t.Fatalf("expected 2 sites, got %d", len(both))
 	}
@@ -834,12 +831,12 @@ func TestRunCheckinsWithPTSite(t *testing.T) {
 	site.SetVerifyDelay(0)
 
 	cfg := baseConfig()
-	cfg.PTCheckinRetries = 0
-	cfg.PTConcurrency = 1
+	cfg.PT.Retries = 0
+	cfg.PT.Concurrency = 1
 	st := newFakePTState()
 	n := &fakeNotifier{}
 	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
-	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour}, []*ptsite.Site{site})
+	a.SetPTSites([]*ptsite.Site{site})
 
 	if err := a.RunCheckins(context.Background()); err != nil {
 		t.Fatalf("RunCheckins: %v", err)
@@ -895,7 +892,7 @@ func TestPollPTMessagesFirstRunAndDedupe(t *testing.T) {
 	st := newFakePTState()
 	n := &fakeNotifier{}
 	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
-	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour, Sites: []ptsite.SiteConfig{site.Config()}}, []*ptsite.Site{site})
+	a.SetPTSites([]*ptsite.Site{site})
 
 	// The first poll records the existing unread message without pushing it.
 	if err := a.pollPTMessages(context.Background()); err != nil {
@@ -944,7 +941,7 @@ func TestLegacyPendingDoesNotMarkDayDoneWhenPTSucceeds(t *testing.T) {
 			RetryAfter: time.Now().Add(time.Hour),
 		},
 	}})
-	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour}, []*ptsite.Site{site})
+	a.SetPTSites([]*ptsite.Site{site})
 
 	if err := a.RunCheckins(context.Background()); err != nil {
 		t.Fatalf("RunCheckins: %v", err)
@@ -982,7 +979,7 @@ func TestPendingCheckinCardIsResentAfterFailure(t *testing.T) {
 
 	n := &fakeNotifier{err: errors.New("webhook down")}
 	a := NewWithDeps(baseConfig(), nopLogger(), false, &fakeFetcher{}, st, n)
-	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour}, []*ptsite.Site{site})
+	a.SetPTSites([]*ptsite.Site{site})
 
 	if err := a.RunCheckins(context.Background()); err == nil {
 		t.Fatal("expected the first card to fail")
@@ -1016,13 +1013,13 @@ func TestRunCheckinsSplitsForumAndPTCards(t *testing.T) {
 	site.SetVerifyDelay(0)
 
 	cfg := baseConfig()
-	cfg.PTCheckinRetries = 0
-	cfg.PTConcurrency = 1
+	cfg.PT.Retries = 0
+	cfg.PT.Concurrency = 1
 	st := newFakePTState()
 	n := &fakeNotifier{}
 	a := NewWithDeps(cfg, nopLogger(), false, &fakeFetcher{}, st, n)
 	a.SetCheckinSites([]checkin.Site{&fakeSite{name: "V2EX", result: checkin.Result{Status: checkin.StatusSuccess, Detail: "ok"}}})
-	a.SetPTSites(&ptsite.Config{FirstRun: "skip", Poll: time.Hour}, []*ptsite.Site{site})
+	a.SetPTSites([]*ptsite.Site{site})
 
 	if err := a.RunCheckins(context.Background()); err != nil {
 		t.Fatalf("RunCheckins: %v", err)

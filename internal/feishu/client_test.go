@@ -171,3 +171,35 @@ func TestClientIgnoresEnvironmentProxy(t *testing.T) {
 		t.Fatal("feishu client must not use environment proxies")
 	}
 }
+
+func TestTransportErrorRedactsWebhook(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	webhook := srv.URL + "/open-apis/bot/v2/hook/secret-token"
+	srv.Close() // force a connection error
+
+	c := NewClient(webhook, "", time.Second)
+	_, err := c.attempt(context.Background(), []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected a transport error")
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("error leaked the webhook token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "<redacted>") {
+		t.Fatalf("error was not marked as redacted: %v", err)
+	}
+}
+
+func TestRedactWebhook(t *testing.T) {
+	in := `Post "https://open.feishu.cn/open-apis/bot/v2/hook/abc-123?x=1": dial tcp: timeout; see https://example.com/hook/not-a-bot`
+	got := RedactWebhook(in)
+	if strings.Contains(got, "abc-123") {
+		t.Fatalf("webhook token survived: %s", got)
+	}
+	if !strings.Contains(got, "<redacted>") {
+		t.Fatalf("expected a placeholder: %s", got)
+	}
+	if !strings.Contains(got, "https://example.com/hook/not-a-bot") {
+		t.Fatalf("unrelated URLs must be left alone: %s", got)
+	}
+}

@@ -1,0 +1,93 @@
+# forum-keeper 配置模板。
+#
+# 复制成 config.yaml 后按需填写：
+#   cp -n config.example.yaml config.yaml && chmod 600 config.yaml
+#
+# 只写要改的项，其余用默认值。文件里带凭据，按 secret 管理（600、不提交）。
+
+feishu:
+  # 群设置 → 群机器人 → 添加机器人 → 自定义机器人，拿到 webhook。
+  # https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  webhook: ''
+  # 机器人开启「签名校验」时才需要。
+  secret: ''
+
+v2ex:
+  # 签到用：浏览器 Cookie 里的 A2、A2O（2FA）、PB3_SESSION。
+  # F12 → Application → Cookies → https://www.v2ex.com
+  # 只保留认证字段即可，_ga/_gid 这类跟踪 cookie 可以删。
+  cookie: ''
+  # 提醒用（API 2.0）：https://www.v2ex.com/settings/tokens
+  # 留空则不轮询提醒。API Token 与网页 Cookie 是两套认证，不能互换。
+  token: ''
+  # 高级：自建镜像或测试时改这两个，一般不用动。
+  # api_base_url: 'https://www.v2ex.com/api/v2'
+  # web_base_url: 'https://www.v2ex.com'
+
+libra:
+  # 2libra 签到：取 access_token= 后面的值，或直接填裸 token。
+  cookie: ''
+  # 高级：base_url: 'https://2libra.com'
+
+checkin:
+  # 每日签到时间。V2EX 任务日从 08:00（UTC+8）开始，不要早于它。
+  time: '08:10'
+  # 启动时补签当天未签到的站点。
+  on_start: true
+  # 调度与所有时间戳使用的时区。
+  timezone: 'Asia/Shanghai'
+
+reminders:
+  # V2EX 提醒轮询间隔，最小 5s。
+  interval: 60s
+  # 每轮最多翻几页（每页 20 条）。
+  max_pages: 3
+  # 首次运行：skip 只记录不推送，push 全部推送。
+  first_run: skip
+  # 推送成功后删除 V2EX 对应提醒。
+  mark_read: false
+  # 只推送这些类型：reply,mention,thanks,other。留空 = 全部推送。
+  filter_types: []
+
+notify:
+  # 启动时发送一张启动卡片。
+  startup: true
+  # 两条启动卡片的最小间隔，防重启刷屏。
+  startup_cooldown: 10m
+  # 连续失败达阈值时发送飞书告警。
+  alert_on_error: true
+
+pt:
+  # PT 站内信轮询间隔，最小 1m。
+  poll_interval: 2h
+  # 首次运行：skip 只记录已有未读，push 全部推送。
+  first_run: skip
+  # 单站签到失败后的重试次数（10m / 30m / 2h 退避）。
+  retries: 2
+  # 同时签到的站点数（1-16）。
+  concurrency: 4
+  # 要签到 / 读站内信的站点。留空即关闭 PT 功能。
+  sites: []
+  # 示例：
+  # sites:
+  #   - url: 'https://pt.btschool.club'
+  #     cookie: 'uid=123; pass=abcdef'
+  #     name: 学校            # 可选，默认取域名
+  #     timeout: 20s          # 可选
+  #     ua: '...'             # 可选，Cookie 与 UA 绑定时填写
+  #     signin:
+  #       mode: checkin       # checkin（默认）/ login（只保活）/ off
+  #       path: /attendance.php
+  #       submit_text: 每日签到
+  #     messages:
+  #       mode: full          # full（读正文并标已读）/ list（只读标题）
+  # 站点按 NexusPHP 通用流程处理：/attendance.php、首页「每日签到」表单、
+  # 常见签到路径自动发现、二段式 token 表单。
+
+server:
+  # 单次 HTTP 请求超时。
+  http_timeout: 20s
+  # 状态库路径，容器内为 /data/state.db。
+  state_path: state.db
+  # debug / info / warn / error
+  log_level: info

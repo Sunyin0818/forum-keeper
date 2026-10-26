@@ -1,6 +1,6 @@
 // Package ptsite implements the generic PT-site sign-in and inbox reader.
 //
-// A site is described by a small JSON rule set: the sign-in endpoint and the
+// A site is described by a small rule set: the sign-in endpoint and the
 // page that renders the inbox. Most private trackers run NexusPHP, so the
 // defaults work without any per-site code; the rule fields exist for the
 // variants (custom attendance paths, two-step forms, JSON APIs).
@@ -11,7 +11,6 @@
 package ptsite
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -35,35 +34,24 @@ const (
 	FirstRunPush = "push"
 )
 
-// Config is the parsed pt-sites.json file.
-type Config struct {
-	// PollInterval is how often unread inboxes are checked. Defaults to 2h.
-	PollInterval string `json:"poll_interval,omitempty"`
-	// FirstRun is "skip" (record existing unread without pushing) or "push".
-	FirstRun string       `json:"first_run,omitempty"`
-	Sites    []SiteConfig `json:"sites"`
-
-	// Poll is PollInterval parsed; not part of the file.
-	Poll time.Duration `json:"-"`
-}
-
-// SiteConfig describes one tracker.
+// SiteConfig describes one tracker. The rule fields only matter for sites
+// that differ from the NexusPHP defaults.
 type SiteConfig struct {
-	Name string `json:"name,omitempty"`
-	URL  string `json:"url"`
+	Name string `yaml:"name"`
+	URL  string `yaml:"url"`
 
 	// Cookie is the Cookie request header. Prefer CookieEnv so the secret
 	// stays in the process environment.
-	Cookie    string `json:"cookie,omitempty"`
-	CookieEnv string `json:"cookie_env,omitempty"`
-	UA        string `json:"ua,omitempty"`
-	Timeout   string `json:"timeout,omitempty"`
+	Cookie    string `yaml:"cookie"`
+	CookieEnv string `yaml:"cookie_env"`
+	UA        string `yaml:"ua"`
+	Timeout   string `yaml:"timeout"`
 
 	// Preset selects a built-in rule set by name. Empty means auto-match by
 	// host; "none" disables auto-matching.
-	Preset   string         `json:"preset,omitempty"`
-	Signin   SigninConfig   `json:"signin"`
-	Messages MessagesConfig `json:"messages"`
+	Preset   string         `yaml:"preset"`
+	Signin   SigninConfig   `yaml:"signin"`
+	Messages MessagesConfig `yaml:"messages"`
 
 	// Resolved at load time; never serialized back.
 	timeout        time.Duration
@@ -75,62 +63,62 @@ type SiteConfig struct {
 // SigninConfig controls the daily sign-in or login keep-alive.
 type SigninConfig struct {
 	// Mode is "checkin" (default), "login" (only verify the session) or "off".
-	Mode string `json:"mode,omitempty"`
+	Mode string `yaml:"mode"`
 	// Path is the sign-in page, default /attendance.php.
-	Path string `json:"path,omitempty"`
+	Path string `yaml:"path"`
 	// Method is GET (default) or POST.
-	Method string `json:"method,omitempty"`
+	Method string `yaml:"method"`
 	// Data is sent as query parameters for GET or form fields for POST.
-	Data map[string]string `json:"data,omitempty"`
+	Data map[string]string `yaml:"data"`
 	// SubmitText selects the form button that triggers the sign-in.
-	SubmitText string `json:"submit_text,omitempty"`
+	SubmitText string `yaml:"submit_text"`
 	// Success / Already / LoginRequired override the default page patterns.
-	Success       string `json:"success,omitempty"`
-	Already       string `json:"already,omitempty"`
-	LoginRequired string `json:"login_required,omitempty"`
+	Success       string `yaml:"success"`
+	Already       string `yaml:"already"`
+	LoginRequired string `yaml:"login_required"`
 	// AbsentKeywords are success indicators that disappear after sign-in.
-	AbsentKeywords []string `json:"absent_keywords,omitempty"`
+	AbsentKeywords []string `yaml:"absent_keywords"`
 	// VerifyPath is re-read after a POST, default Path.
-	VerifyPath string `json:"verify_path,omitempty"`
+	VerifyPath string `yaml:"verify_path"`
 	// TwoStep handles sites where the first page only carries a token.
-	TwoStep *TwoStepConfig `json:"two_step,omitempty"`
+	TwoStep *TwoStepConfig `yaml:"two_step"`
 	// Bonus is an optional regex for the reward sentence.
-	Bonus string `json:"bonus,omitempty"`
+	Bonus string `yaml:"bonus"`
 }
 
 // TwoStepConfig describes a token page followed by the real sign-in request.
 type TwoStepConfig struct {
-	Path   string            `json:"path"`
-	Method string            `json:"method,omitempty"`
-	Data   map[string]string `json:"data,omitempty"`
+	Path   string            `yaml:"path"`
+	Method string            `yaml:"method"`
+	Data   map[string]string `yaml:"data"`
 	// Tokens maps a form field name to a regex whose first group is the value.
-	Tokens map[string]string `json:"tokens,omitempty"`
+	Tokens map[string]string `yaml:"tokens"`
 	// Headers are extra request headers for the second request.
-	Headers map[string]string `json:"headers,omitempty"`
+	Headers map[string]string `yaml:"headers"`
 }
 
 // MessagesConfig controls inbox reading.
 type MessagesConfig struct {
 	// Engine is "nexusphp" (default) or "off".
-	Engine string `json:"engine,omitempty"`
+	Engine string `yaml:"engine"`
 	// Mode is "full" (fetch the body, which marks the message read on
 	// NexusPHP) or "list" (only titles/dates, leaving unread state alone).
-	Mode       string `json:"mode,omitempty"`
-	InboxPath  string `json:"inbox_path,omitempty"`
-	SystemPath string `json:"system_path,omitempty"`
-	MaxPages   int    `json:"max_pages,omitempty"`
+	Mode       string `yaml:"mode"`
+	InboxPath  string `yaml:"inbox_path"`
+	SystemPath string `yaml:"system_path"`
+	MaxPages   int    `yaml:"max_pages"`
 	// Selectors overrides the built-in NexusPHP selectors when a theme differs.
-	Selectors *MessageSelectors `json:"selectors,omitempty"`
+	Selectors *MessageSelectors `yaml:"selectors"`
 }
 
 // MessageSelectors is an escape hatch for custom themes. Empty fields use the
 // built-in selectors.
 type MessageSelectors struct {
-	UnreadRow string `json:"unread_row,omitempty"`
-	Link      string `json:"link,omitempty"`
-	Title     string `json:"title,omitempty"`
-	Date      string `json:"date,omitempty"`
-	Body      string `json:"body,omitempty"`
+	UnreadRow string `yaml:"unread_row"`
+	Link      string `yaml:"link"`
+	Title     string `yaml:"title"`
+	Date      string `yaml:"date"`
+	Body      string `yaml:"body"`
 }
 
 func (c MessagesConfig) enabled() bool {
@@ -142,67 +130,11 @@ func (c SigninConfig) enabled() bool {
 }
 
 // Host returns the normalized host key used in state and dedupe keys.
-func (c SiteConfig) Host() string { return c.host }
+func (s SiteConfig) Host() string { return s.host }
 
-// Load reads and validates a pt-sites.json file. CookieEnv is resolved here;
-// a missing environment variable is a startup error rather than a silently
-// disabled site.
-func Load(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("ptsite: read %s: %w", path, err)
-	}
-	var cfg Config
-	dec := json.NewDecoder(strings.NewReader(string(raw)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("ptsite: parse %s: %w", path, err)
-	}
-	if err := cfg.normalize(); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}
-
-func (c *Config) normalize() error {
-	if len(c.Sites) == 0 {
-		return fmt.Errorf("ptsite: no sites configured")
-	}
-	c.PollInterval = strings.TrimSpace(c.PollInterval)
-	if c.PollInterval == "" {
-		c.PollInterval = DefaultPoll.String()
-	}
-	poll, err := time.ParseDuration(c.PollInterval)
-	if err != nil {
-		return fmt.Errorf("ptsite: poll_interval %q: %w", c.PollInterval, err)
-	}
-	if poll < time.Minute {
-		return fmt.Errorf("ptsite: poll_interval must be >= 1m, got %s", poll)
-	}
-	c.Poll = poll
-
-	c.FirstRun = strings.ToLower(strings.TrimSpace(c.FirstRun))
-	if c.FirstRun == "" {
-		c.FirstRun = FirstRunSkip
-	}
-	if c.FirstRun != FirstRunSkip && c.FirstRun != FirstRunPush {
-		return fmt.Errorf("ptsite: first_run must be %q or %q, got %q", FirstRunSkip, FirstRunPush, c.FirstRun)
-	}
-
-	seen := make(map[string]struct{}, len(c.Sites))
-	for i := range c.Sites {
-		if err := c.Sites[i].normalize(); err != nil {
-			return fmt.Errorf("ptsite: site %q: %w", c.Sites[i].Name, err)
-		}
-		if _, dup := seen[c.Sites[i].host]; dup {
-			return fmt.Errorf("ptsite: duplicate site host %q", c.Sites[i].host)
-		}
-		seen[c.Sites[i].host] = struct{}{}
-	}
-	return nil
-}
-
-func (s *SiteConfig) normalize() error {
+// Normalize validates the site rules and resolves the cookie. A missing
+// cookie is an error rather than a silently disabled site.
+func (s *SiteConfig) Normalize() error {
 	s.URL = strings.TrimRight(strings.TrimSpace(s.URL), "/")
 	base, err := url.Parse(s.URL)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {

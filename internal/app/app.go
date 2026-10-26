@@ -106,11 +106,11 @@ type App struct {
 // New builds an App from configuration, opening the state database and HTTP
 // clients.
 func New(cfg *config.Config, logger *slog.Logger, dryRun bool) (*App, error) {
-	src, err := v2ex.NewClient(cfg.V2EXToken, cfg.V2EXBaseURL, cfg.HTTPTimeout)
+	src, err := v2ex.NewClient(cfg.V2EX.Token, cfg.V2EX.APIBaseURL, cfg.Server.HTTPTimeout)
 	if err != nil {
 		return nil, err
 	}
-	st, err := openState(cfg.StatePath, dryRun)
+	st, err := openState(cfg.Server.StatePath, dryRun)
 	if err != nil {
 		return nil, err
 	}
@@ -119,42 +119,38 @@ func New(cfg *config.Config, logger *slog.Logger, dryRun bool) (*App, error) {
 			logger.Warn("prune PT message state", "err", err)
 		}
 	}
-	ptCfg, ptSites, err := loadPTSites(cfg, logger, dryRun)
+	ptSites, err := loadPTSites(cfg, logger, dryRun)
 	if err != nil {
 		if closer, ok := st.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
 		return nil, err
 	}
-	bot := feishu.NewBot(feishu.NewClient(cfg.FeishuWebhook, cfg.FeishuSecret, cfg.HTTPTimeout), src)
+	bot := feishu.NewBot(feishu.NewClient(cfg.Feishu.Webhook, cfg.Feishu.Secret, cfg.Server.HTTPTimeout), src)
 	a := NewWithDeps(cfg, logger, dryRun, src, st, bot)
-	if ptCfg != nil {
-		a.SetPTSites(ptCfg, ptSites)
+	if len(ptSites) > 0 {
+		a.SetPTSites(ptSites)
 	}
 	return a, nil
 }
 
-// loadPTSites parses PT_SITES_FILE and builds one client per site. A malformed
-// file is a startup error: silently disabling a tracker would make a missing
-// sign-in look like a completed one.
-func loadPTSites(cfg *config.Config, logger *slog.Logger, dryRun bool) (*ptsite.Config, []*ptsite.Site, error) {
-	if strings.TrimSpace(cfg.PTSitesFile) == "" {
-		return nil, nil, nil
+// loadPTSites builds one client per configured tracker. A malformed site is a
+// startup error: silently disabling a tracker would make a missing sign-in
+// look like a completed one.
+func loadPTSites(cfg *config.Config, logger *slog.Logger, dryRun bool) ([]*ptsite.Site, error) {
+	if len(cfg.PT.Sites) == 0 {
+		return nil, nil
 	}
-	pcfg, err := ptsite.Load(cfg.PTSitesFile)
-	if err != nil {
-		return nil, nil, err
-	}
-	sites := make([]*ptsite.Site, 0, len(pcfg.Sites))
-	for _, sc := range pcfg.Sites {
+	sites := make([]*ptsite.Site, 0, len(cfg.PT.Sites))
+	for _, sc := range cfg.PT.Sites {
 		site, err := ptsite.NewSite(sc, logger, dryRun)
 		if err != nil {
-			return nil, nil, fmt.Errorf("ptsite %s: %w", sc.Name, err)
+			return nil, fmt.Errorf("ptsite %s: %w", sc.Name, err)
 		}
 		sites = append(sites, site)
 	}
-	logger.Info("pt sites loaded", "config", cfg.PTSitesFile, "sites", len(sites), "poll", pcfg.Poll.String())
-	return pcfg, sites, nil
+	logger.Info("pt sites loaded", "sites", len(sites), "poll", cfg.PT.PollInterval.String())
+	return sites, nil
 }
 
 // openState opens the state database. Dry runs use a read-only store so they
@@ -176,7 +172,7 @@ func NewWithDeps(cfg *config.Config, logger *slog.Logger, dryRun bool, src Fetch
 		a.closer = closer.Close
 	}
 	a.sites = buildCheckinSites(cfg)
-	a.ptPollInterval = cfg.PTPollInterval
+	a.ptPollInterval = cfg.PT.PollInterval
 	if a.ptPollInterval < time.Minute {
 		a.ptPollInterval = 2 * time.Hour
 	}
@@ -185,19 +181,19 @@ func NewWithDeps(cfg *config.Config, logger *slog.Logger, dryRun bool, src Fetch
 
 // SetPTSites attaches PT sites. It is called by New after loading the config;
 // tests use it to inject a runner backed by an httptest server.
-func (a *App) SetPTSites(cfg *ptsite.Config, sites []*ptsite.Site) {
-	a.ptPollInterval = cfg.Poll
+func (a *App) SetPTSites(sites []*ptsite.Site) {
+	a.ptPollInterval = a.cfg.PT.PollInterval
 	if a.ptPollInterval < time.Minute {
 		a.ptPollInterval = 2 * time.Hour
 	}
-	firstRun := cfg.FirstRun
+	firstRun := a.cfg.PT.FirstRun
 	if firstRun == "" {
 		firstRun = ptsite.FirstRunSkip
 	}
 	state, _ := a.state.(ptsite.State)
 	a.ptRunner = ptsite.NewRunner(
 		sites, state, a.log, firstRun,
-		a.cfg.PTCheckinRetries+1, a.cfg.PTConcurrency, a.dryRun,
+		a.cfg.PT.Retries+1, a.cfg.PT.Concurrency, a.dryRun,
 	)
 }
 
@@ -206,11 +202,11 @@ func (a *App) SetPTSites(cfg *ptsite.Config, sites []*ptsite.Site) {
 // that never configured check-in keeps working unchanged.
 func buildCheckinSites(cfg *config.Config) []checkin.Site {
 	var sites []checkin.Site
-	if cfg.V2EXCookie != "" {
-		sites = append(sites, checkin.NewV2EXSite(cfg.V2EXCookie, cfg.V2EXWebBaseURL, cfg.HTTPTimeout))
+	if cfg.V2EX.Cookie != "" {
+		sites = append(sites, checkin.NewV2EXSite(cfg.V2EX.Cookie, cfg.V2EX.WebBaseURL, cfg.Server.HTTPTimeout))
 	}
-	if cfg.LibraCookie != "" {
-		sites = append(sites, checkin.NewLibraSite(cfg.LibraCookie, cfg.LibraBaseURL, cfg.HTTPTimeout))
+	if cfg.Libra.Cookie != "" {
+		sites = append(sites, checkin.NewLibraSite(cfg.Libra.Cookie, cfg.Libra.BaseURL, cfg.Server.HTTPTimeout))
 	}
 	return sites
 }
@@ -240,7 +236,7 @@ func (a *App) CheckConfig() error {
 		a.log.Info("check-in site", "name", site.Name())
 	}
 	if a.ptRunner == nil {
-		a.log.Info("PT sites: disabled (PT_SITES_FILE is empty)")
+		a.log.Info("PT sites: disabled (pt.sites is empty)")
 		return nil
 	}
 	for _, site := range a.ptRunner.Sites() {
@@ -277,7 +273,7 @@ func (a *App) CheckToken(ctx context.Context) error {
 
 // RemindersEnabled reports whether V2EX notification polling is configured.
 // V2EX_TOKEN is optional: without it the service runs the daily check-in only.
-func (a *App) RemindersEnabled() bool { return a.cfg.V2EXToken != "" }
+func (a *App) RemindersEnabled() bool { return a.cfg.V2EX.Token != "" }
 
 // NotifyStartup sends the "service started" card.
 //
@@ -286,13 +282,13 @@ func (a *App) RemindersEnabled() bool { return a.cfg.V2EXToken != "" }
 // group). force=true is used by the --notify-startup flag and bypasses both.
 func (a *App) NotifyStartup(ctx context.Context, force bool) error {
 	if !force {
-		if !a.cfg.StartupMessage {
+		if !a.cfg.Notify.Startup {
 			return nil
 		}
 		if last, err := a.state.LastStartup(); err != nil {
 			a.log.Warn("could not read last startup time", "err", err)
-		} else if !last.IsZero() && a.cfg.StartupMessageCooldown > 0 {
-			if since := time.Since(last); since < a.cfg.StartupMessageCooldown {
+		} else if !last.IsZero() && a.cfg.Notify.StartupCooldown > 0 {
+			if since := time.Since(last); since < a.cfg.Notify.StartupCooldown {
 				a.log.Info("startup message skipped (cooldown)",
 					"last_sent", last.Format(time.RFC3339), "ago", since.Round(time.Second))
 				return nil
@@ -331,17 +327,17 @@ func (a *App) startupLines() []string {
 	if a.RemindersEnabled() {
 		lines = append(lines,
 			"提醒: V2EX",
-			"轮询间隔: "+a.cfg.PollInterval.String(),
-			"首轮策略: "+a.cfg.FirstRun,
-			"标记已读: "+yesNo(a.cfg.MarkRead),
-			"类型过滤: "+filterLabel(a.cfg.FilterTypes),
+			"轮询间隔: "+a.cfg.Reminders.Interval.String(),
+			"首轮策略: "+a.cfg.Reminders.FirstRun,
+			"标记已读: "+yesNo(a.cfg.Reminders.MarkRead),
+			"类型过滤: "+filterLabel(a.cfg.Reminders.FilterTypes),
 		)
 	} else {
 		lines = append(lines, "提醒: 未启用（未设置 V2EX_TOKEN）")
 	}
 	lines = append(lines,
 		"V2EX 代理: "+proxyLabel(),
-		"状态文件: "+a.cfg.StatePath,
+		"状态文件: "+a.cfg.Server.StatePath,
 	)
 	return lines
 }
@@ -362,19 +358,20 @@ func (a *App) checkinLabel() string {
 	if len(names) == 0 {
 		return "未启用"
 	}
-	loc := a.cfg.CheckinLocation
-	if loc == nil {
-		loc = time.Local
+	loc := a.checkinLoc()
+	hour, minute, err := a.cfg.CheckinClock()
+	if err != nil {
+		hour, minute = 0, 0
 	}
 	return fmt.Sprintf("%s（每天 %02d:%02d %s）",
-		strings.Join(names, " + "), a.cfg.CheckinHour, a.cfg.CheckinMinute, loc)
+		strings.Join(names, " + "), hour, minute, loc)
 }
 
 // checkinLoc returns the configured schedule zone, falling back to the process
 // zone when it is unset (tests build a Config directly).
 func (a *App) checkinLoc() *time.Location {
-	if a.cfg.CheckinLocation != nil {
-		return a.cfg.CheckinLocation
+	if loc, err := a.cfg.Location(); err == nil && loc != nil {
+		return loc
 	}
 	return time.Local
 }
@@ -383,12 +380,12 @@ func (a *App) checkinLoc() *time.Location {
 func (a *App) Run(ctx context.Context) error {
 	a.log.Info("forum-keeper starting",
 		"version", a.version,
-		"interval", a.cfg.PollInterval.String(),
+		"interval", a.cfg.Reminders.Interval.String(),
 		"dry_run", a.dryRun,
-		"first_run", a.cfg.FirstRun,
-		"mark_read", a.cfg.MarkRead,
-		"state", a.cfg.StatePath,
-		"filter_types", a.cfg.FilterTypes,
+		"first_run", a.cfg.Reminders.FirstRun,
+		"mark_read", a.cfg.Reminders.MarkRead,
+		"state", a.cfg.Server.StatePath,
+		"filter_types", a.cfg.Reminders.FilterTypes,
 	)
 	if err := a.NotifyStartup(ctx, false); err != nil {
 		// A failed startup message must not stop the service.
@@ -423,7 +420,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	a.pollAndLog(ctx)
 
-	ticker := time.NewTicker(a.cfg.PollInterval)
+	ticker := time.NewTicker(a.cfg.Reminders.Interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -740,7 +737,7 @@ func (a *App) ptMessageLoop(ctx context.Context) {
 // PollPTMessages runs one inbox poll. It is used by the --pt-messages flag.
 func (a *App) PollPTMessages(ctx context.Context) error {
 	if a.ptRunner == nil {
-		a.log.Info("PT message poll skipped: PT_SITES_FILE is empty")
+		a.log.Info("PT message poll skipped: PT is not configured")
 		return nil
 	}
 	return a.pollPTMessages(ctx)
@@ -808,7 +805,7 @@ func toSiteMessages(msgs []ptsite.Message) []feishu.SiteMessage {
 // across the scheduled time), it runs immediately. The per-day guard matters
 // because containers restart often and a restart loop must not spam the group.
 func (a *App) maybeCheckinOnStart(ctx context.Context) {
-	if !a.cfg.CheckinOnStart {
+	if !a.cfg.Checkin.OnStart {
 		return
 	}
 	if a.checkedInToday() {
@@ -869,7 +866,11 @@ func (a *App) checkinLoop(ctx context.Context) {
 				"in", delay.Round(time.Second).String())
 		} else {
 			a.retryAt = time.Time{}
-			delay = checkin.UntilNext(now, a.cfg.CheckinHour, a.cfg.CheckinMinute, a.checkinLoc())
+			hour, minute, err := a.cfg.CheckinClock()
+			if err != nil {
+				return
+			}
+			delay = checkin.UntilNext(now, hour, minute, a.checkinLoc())
 			next := now.Add(delay).In(a.checkinLoc())
 			a.log.Info("next check-in scheduled",
 				"at", next.Format("2006-01-02 15:04:05"),
@@ -934,7 +935,7 @@ func (a *App) PollOnce(ctx context.Context) (int, error) {
 
 	// On the very first ever run the store is empty. By default we only record
 	// the current notifications so a fresh deploy does not spam the group.
-	if count == 0 && a.cfg.FirstRun == config.FirstRunSkip {
+	if count == 0 && a.cfg.Reminders.FirstRun == config.FirstRunSkip {
 		if a.dryRun {
 			a.log.Info("dry-run: first run would record existing notifications without pushing", "count", len(ids))
 			for _, it := range items {
@@ -1009,7 +1010,7 @@ func (a *App) PollOnce(ctx context.Context) (int, error) {
 		return len(fresh), err
 	}
 
-	if a.cfg.MarkRead {
+	if a.cfg.Reminders.MarkRead {
 		for _, it := range fresh {
 			if err := a.src.DeleteNotification(ctx, it.ID); err != nil {
 				a.log.Warn("mark read failed", "id", it.ID, "err", err)
@@ -1025,7 +1026,7 @@ func (a *App) fetch(ctx context.Context) ([]v2ex.Notification, error) {
 	var all []v2ex.Notification
 	seen := make(map[int]struct{})
 
-	for page := 1; page <= a.cfg.MaxPages; page++ {
+	for page := 1; page <= a.cfg.Reminders.MaxPages; page++ {
 		items, err := a.src.Notifications(ctx, page)
 		if err != nil {
 			return nil, fmt.Errorf("fetch notifications page %d: %w", page, err)
@@ -1061,11 +1062,11 @@ func (a *App) fetch(ctx context.Context) ([]v2ex.Notification, error) {
 }
 
 func (a *App) passFilter(it v2ex.Notification) bool {
-	if len(a.cfg.FilterTypes) == 0 {
+	if len(a.cfg.Reminders.FilterTypes) == 0 {
 		return true
 	}
 	kind := feishu.KindOf(it.Text)
-	for _, f := range a.cfg.FilterTypes {
+	for _, f := range a.cfg.Reminders.FilterTypes {
 		if strings.EqualFold(f, kind) {
 			return true
 		}
@@ -1096,7 +1097,7 @@ func (a *App) pollAndLog(ctx context.Context) {
 }
 
 func (a *App) maybeAlert(ctx context.Context, cause error) {
-	if !a.cfg.AlertOnError || a.failures < alertThreshold {
+	if !a.cfg.Notify.AlertOnError || a.failures < alertThreshold {
 		return
 	}
 	if time.Since(a.lastAlert) < alertMinInterval {
@@ -1104,7 +1105,7 @@ func (a *App) maybeAlert(ctx context.Context, cause error) {
 	}
 	a.lastAlert = time.Now()
 
-	text := fmt.Sprintf("⚠️ V2EX 通知服务异常\n连续失败 %d 次\n最近错误: %s", a.failures, truncateErr(cause, 300))
+	text := fmt.Sprintf("⚠️ V2EX 通知服务异常\n连续失败 %d 次\n最近错误: %s", a.failures, feishu.RedactWebhook(truncateErr(cause, 300)))
 
 	// The alert must still go out even if the parent context is cancelled.
 	alertCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)

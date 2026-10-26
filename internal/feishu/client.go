@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,17 @@ const (
 	// rejection drops the message for good.
 	codeFrequencyLimited = 11232
 )
+
+// webhookRe matches a custom-bot webhook URL, whose path token is the
+// credential itself. Transport errors render the full request URL, so any
+// error text that may be logged or sent back through a card has to pass
+// through RedactWebhook first.
+var webhookRe = regexp.MustCompile(`https?://[^\s"']+/(?:open-apis/)?bot/v2/hook/[^\s"'?#]+`)
+
+// RedactWebhook replaces webhook URLs in s with a placeholder.
+func RedactWebhook(s string) string {
+	return webhookRe.ReplaceAllString(s, "https://open.feishu.cn/open-apis/bot/v2/hook/<redacted>")
+}
 
 // Client is a webhook client for a Feishu custom bot.
 type Client struct {
@@ -130,7 +142,7 @@ type attemptOutcome struct {
 func (c *Client) attempt(ctx context.Context, body []byte) (attemptOutcome, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.webhook, bytes.NewReader(body))
 	if err != nil {
-		return attemptOutcome{}, fmt.Errorf("feishu: build request: %w", err)
+		return attemptOutcome{}, fmt.Errorf("feishu: build request: %s", RedactWebhook(err.Error()))
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 
@@ -139,7 +151,7 @@ func (c *Client) attempt(ctx context.Context, body []byte) (attemptOutcome, erro
 		if ctx.Err() != nil {
 			return attemptOutcome{}, ctx.Err()
 		}
-		return attemptOutcome{retryable: true}, fmt.Errorf("feishu: request failed: %w", err)
+		return attemptOutcome{retryable: true}, fmt.Errorf("feishu: request failed: %s", RedactWebhook(err.Error()))
 	}
 	defer resp.Body.Close()
 

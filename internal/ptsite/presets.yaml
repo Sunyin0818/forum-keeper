@@ -1,0 +1,43 @@
+# Built-in rule sets for trackers that share the NexusPHP layout. A site
+# config only overrides the fields that differ.
+presets:
+  - name: btschool
+    title: 学校
+    hosts:
+      - btschool.club
+      - pt.btschool.club
+    signin:
+      path: /index.php
+      success: 签到成功|领取成功
+      absent_keywords:
+        - 每日签到
+      two_step:
+        path: /index.php?action=addbonus
+        method: GET
+
+  - name: carpt
+    title: CarPT
+    hosts:
+      - carpt.net
+    signin:
+      path: /attendance.php
+      success: 签到成功|簽到成功
+      already: 今日已签到|今天已签到|已签到
+
+  - name: ptzone
+    title: PTZone
+    hosts:
+      - ptzone.xyz
+    signin:
+      path: /attendance.php
+      success: 签到成功|簽到成功
+      already: 今日已签到|今天已签到|已签到
+
+  - name: cspt
+    title: 财神
+    hosts:
+      - cspt.top
+    signin:
+      path: /attendance.php
+      success: 签到成功|簽到成功
+      already: 今日已签到|今天已签到|已签到

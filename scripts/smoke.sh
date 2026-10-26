@@ -27,15 +27,37 @@ done
 echo "==> building forum-keeper"
 "$GO" build -o "$WORK/forum-keeper" ./cmd/forum-keeper
 
-export V2EX_API_BASE_URL="$BASE/api/v2"
-export V2EX_TOKEN="smoke-token"
-export FEISHU_WEBHOOK="$BASE/hook"
-export STATE_PATH="$WORK/state.db"
-export V2EX_FIRST_RUN=skip
-export LOG_LEVEL=warn
+# Run from a scratch directory: the config file is looked up relative to the
+# working directory, and a developer checkout may have a real config.yaml.
+cd "$WORK"
+
 # Keep the mock traffic off any system-wide proxy (CI runners often have one set).
 export NO_PROXY="127.0.0.1,localhost"
 export no_proxy="127.0.0.1,localhost"
+
+write_config() {
+  cat >"$WORK/config.yaml"
+}
+
+write_config <<EOF
+feishu:
+  webhook: "$BASE/hook"
+v2ex:
+  cookie: 'A2=smoke'
+  token: 'smoke-token'
+  api_base_url: "$BASE/api/v2"
+  web_base_url: "$BASE"
+libra:
+  cookie: 'access_token=smoke'
+  base_url: "$BASE"
+reminders:
+  first_run: skip
+server:
+  state_path: "$WORK/state.db"
+  log_level: warn
+EOF
+
+export CONFIG_FILE="$WORK/config.yaml"
 
 echo "==> run 0: startup message (webhook smoke test)"
 "$WORK/forum-keeper" --notify-startup
@@ -46,40 +68,41 @@ echo "==> run 1: first run records existing notifications without pushing"
 echo "==> run 2: pushes the newly arrived notification"
 "$WORK/forum-keeper" --once
 
-echo "==> run 3: V2EX_MARK_READ deletes the pushed notification"
+echo "==> run 3: reminders.mark_read deletes the pushed notification"
 V2EX_MARK_READ=true "$WORK/forum-keeper" --once
 
 echo "==> run 4: daily check-in for both sites"
-V2EX_COOKIE="A2=smoke" V2EX_WEB_BASE_URL="$BASE" \
-  LIBRA_COOKIE="access_token=smoke" LIBRA_BASE_URL="$BASE" \
-  "$WORK/forum-keeper" --checkin
+"$WORK/forum-keeper" --checkin
 
 echo "==> run 5: PT site check-in"
-cat >"$WORK/pt-sites.json" <<EOF
-{
-  "first_run": "skip",
-  "sites": [
-    {
-      "name": "HDSky",
-      "url": "$BASE",
-      "cookie": "session=smoke",
-      "signin": {"mode": "checkin"},
-      "messages": {"mode": "full"}
-    }
-  ]
-}
+# Only the PT site here, so the run produces the PT card alone.
+write_config <<EOF
+feishu:
+  webhook: "$BASE/hook"
+pt:
+  sites:
+    - name: HDSky
+      url: "$BASE"
+      cookie: 'session=smoke'
+      signin:
+        mode: checkin
+      messages:
+        mode: full
+server:
+  state_path: "$WORK/state.db"
+  log_level: warn
 EOF
-PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --check-config
-PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --checkin
+"$WORK/forum-keeper" --check-config
+"$WORK/forum-keeper" --checkin
 
 echo "==> run 6: first PT inbox poll records existing unread without pushing"
-PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --pt-messages
+"$WORK/forum-keeper" --pt-messages
 
 echo "==> run 7: a new PT message is pushed once"
-PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --pt-messages
+"$WORK/forum-keeper" --pt-messages
 
 echo "==> run 8: the same PT message is not pushed again"
-PT_SITES_FILE="$WORK/pt-sites.json" "$WORK/forum-keeper" --pt-messages
+"$WORK/forum-keeper" --pt-messages
 
 python3 - "$BASE" <<'PY'
 import json
