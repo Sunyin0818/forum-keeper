@@ -89,9 +89,9 @@ docker compose up -d
 |---|---|
 | `feishu.webhook` | 群自定义机器人 webhook，必填 |
 | `feishu.secret` | 机器人开启签名校验时填写 |
-| `v2ex.cookie` | V2EX 签到。浏览器 Cookie 中的 `A2`、`A2O`（2FA）、`PB3_SESSION` |
+| `v2ex.cookie` | V2EX 签到。浏览器 Cookie 中的 `A2`、`A2O`（2FA）、`PB3_SESSION`，其余字段可删 |
 | `v2ex.token` | V2EX 提醒（API 2.0）。留空则关闭提醒 |
-| `libra.cookie` | 2libra 签到。填 `access_token=...` 或裸 token |
+| `libra.cookie` | 2libra 签到。填 `access_token=...` 或裸 token；被 Cloudflare 拦截时加上 `cf_clearance` |
 
 V2EX 提醒使用 API Token，签到使用网页 Cookie，两者独立配置。
 
@@ -140,7 +140,7 @@ Cloudflare/WAF、验证码、随机答题站点返回验证失败；站点维护
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `server.http_timeout` | `20s` | 单次 HTTP 请求超时 |
-| `server.state_path` | `state.db` | 状态库路径，容器内为 `/data/state.db` |
+| `server.state_path` | `state.db` | 状态库路径。容器内由 compose 覆盖为 `/data/state.db` |
 | `server.log_level` | `info` | `debug`、`info`、`warn`、`error` |
 
 ### 目录

@@ -15,7 +15,7 @@ feishu:
 v2ex:
   # 签到用：浏览器 Cookie 里的 A2、A2O（2FA）、PB3_SESSION。
   # F12 → Application → Cookies → https://www.v2ex.com
-  # 只保留认证字段即可，_ga/_gid 这类跟踪 cookie 可以删。
+  # 只保留认证字段即可，V2EX_LANG / _ga 这类非认证项可以删。
   cookie: ''
   # 提醒用（API 2.0）：https://www.v2ex.com/settings/tokens
   # 留空则不轮询提醒。API Token 与网页 Cookie 是两套认证，不能互换。
@@ -26,6 +26,7 @@ v2ex:
 
 libra:
   # 2libra 签到：取 access_token= 后面的值，或直接填裸 token。
+  # 只保留 access_token（Cloudflare 拦截时再加上 cf_clearance）。
   cookie: ''
   # 高级：base_url: 'https://2libra.com'
 
@@ -87,7 +88,7 @@ pt:
 server:
   # 单次 HTTP 请求超时。
   http_timeout: 20s
-  # 状态库路径，容器内为 /data/state.db。
+  # 状态库路径。本地默认当前目录；容器内由 compose 覆盖为 /data/state.db。
   state_path: state.db
   # debug / info / warn / error
   log_level: info
