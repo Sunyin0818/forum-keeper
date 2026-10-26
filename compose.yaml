@@ -4,15 +4,13 @@ name: forum-keeper
 services:
   forum-keeper:
     # 钉版本，升级改这一行。
-    image: ghcr.io/sunyin0818/forum-keeper:0.6.0
+    image: ghcr.io/sunyin0818/forum-keeper:0.7.0
     container_name: forum-keeper
     restart: unless-stopped
     environment:
       # 配置文件只读挂载在 /config；运行状态只写 /data。
       CONFIG_FILE: /config/config.yaml
       STATE_PATH: /data/state.db
-      # 影响签到调度与卡片/日志时间戳；docker 默认 UTC。
-      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # 状态库，丢了会重推历史提醒。
       - data:/data
