@@ -48,6 +48,8 @@ cp config.example.yaml config.yaml
 chmod 600 config.yaml
 ```
 
+`config.yaml` 里有凭据，按 secret 管理：不要提交进 Git，也不要打进镜像。
+
 ### 3. 编辑配置
 
 ```bash
@@ -77,7 +79,7 @@ docker compose up -d
 
 ## 配置
 
-配置文件为 `config.yaml`，容器内只读挂载到 `/config/config.yaml`。完整字段说明见 [`config.example.yaml`](config.example.yaml)。
+配置文件为 `config.yaml`，容器内只读挂载到 `/config/config.yaml`。逐项注释见 [`config.example.yaml`](config.example.yaml)。
 
 ### 凭据
 
@@ -165,16 +167,6 @@ docker compose run --rm forum-keeper --checkin --dry-run
 ```
 
 不带参数时常驻运行。一次性命令和常驻进程共用状态库，同时执行前先 `docker compose stop`。
-
-## 从旧版配置迁移
-
-旧版用 `config/.env` + `config/pt-sites.json` 两个文件。仓库里带了一个转换脚本：
-
-```bash
-python3 scripts/migrate-env-to-yaml.py config/.env config/pt-sites.json config.yaml
-chmod 600 config.yaml
-docker compose up -d
-```
 
 ## 升级
 
