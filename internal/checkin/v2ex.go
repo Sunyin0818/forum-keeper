@@ -39,6 +39,9 @@ var (
 	// e.g. "20261009" from "v2ex:member:477522:20261009". The mission day runs
 	// 08:00-08:00 UTC+8, so before 08:00 the key is still yesterday's date.
 	missionDayRe = regexp.MustCompile(`v2ex:member:\d+:(\d{8})`)
+	// titleRe reads the page title, which is the cheapest way to name a page
+	// the claim flow did not expect (a login or challenge screen).
+	titleRe = regexp.MustCompile(`(?is)<title>\s*(.*?)\s*</title>`)
 )
 
 const (
@@ -48,6 +51,12 @@ const (
 	// v2exRetryInterval backs off when the mission day has still not rolled over
 	// after its window (V2EX is sometimes late).
 	v2exRetryInterval = 30 * time.Minute
+	// v2exClaimAttempts bounds how often one run asks V2EX to pay the bonus.
+	// The redeem endpoint answers 2xx even when it credits nothing, and a token
+	// mismatch is answered with "请重新点击一次", so a single attempt can lose
+	// the day over something a repeat fixes. Repeated claims are safe: the
+	// bonus is once per mission day.
+	v2exClaimAttempts = 3
 )
 
 // V2EXSite claims the V2EX daily login bonus.
@@ -70,6 +79,11 @@ type V2EXSite struct {
 // (PB3_SESSION in particular) are carried into the claim request, as a browser
 // would. A claim issued with a bare A2 has been observed to 302 without
 // crediting, while the same account signed in via a browser works.
+//
+// PB3_SESSION is deliberately taken from the site, not from the config: V2EX
+// issues it with a five-day expiry and only when the request does not already
+// carry one, so a value copied from a browser shadows the fresh cookie and
+// leaves the claim running on a session the site no longer hands out.
 func NewV2EXSite(cookie, baseURL string, timeout time.Duration) *V2EXSite {
 	if baseURL == "" {
 		baseURL = DefaultBaseURLV2EX
@@ -82,11 +96,25 @@ func NewV2EXSite(cookie, baseURL string, timeout time.Duration) *V2EXSite {
 	if s.cookie != "" {
 		if u, err := url.Parse(s.baseURL); err == nil {
 			jar, _ := cookiejar.New(nil)
-			jar.SetCookies(u, parseCookieHeader(s.cookie))
+			jar.SetCookies(u, sessionCookies(s.cookie))
 			s.hc.Jar = jar
 		}
 	}
 	return s
+}
+
+// sessionCookies parses the configured Cookie header and drops PB3_SESSION,
+// which V2EX issues itself on the first response of a run.
+func sessionCookies(header string) []*http.Cookie {
+	cookies := parseCookieHeader(header)
+	kept := cookies[:0]
+	for _, c := range cookies {
+		if strings.EqualFold(c.Name, "PB3_SESSION") {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
 }
 
 // parseCookieHeader turns a Cookie request header into cookies, stripping the
@@ -122,9 +150,12 @@ func (s *V2EXSite) Name() string { return "V2EX" }
 //
 // A fresh claim is only a success when it can be seen landing: V2EX answers the
 // redeem endpoint with 302 even when it credits nothing, so the optimistic
-// "200 means success" shortcut would report a sign-in that never happened.
+// "200 means success" shortcut would report a sign-in that never happened. The
+// claim is therefore repeated a few times before the ledger is consulted, and
+// the claim page is named in the failure detail when nothing explains it.
 func (s *V2EXSite) SignIn(ctx context.Context) Result {
-	res, reward, confirmed := s.signInOnce(ctx)
+	out := s.claim(ctx)
+	res, reward, confirmed := out.res, out.reward, out.confirmed
 	if !res.OK() {
 		return res
 	}
@@ -140,7 +171,11 @@ func (s *V2EXSite) SignIn(ctx context.Context) Result {
 
 	switch {
 	case res.Status == StatusSuccess && !confirmed && todayReward == "":
-		res = failure(s.Name(), "签到未生效（签到页仍可领取，余额没有今天的奖励流水）")
+		detail := "签到未生效（签到页仍可领取，余额没有今天的奖励流水）"
+		if out.hint != "" {
+			detail += "；领取页：" + out.hint
+		}
+		res = failure(s.Name(), detail)
 	case reward != "":
 		res.Detail = withReward(res.Detail, reward)
 	case res.Status == StatusSuccess:
@@ -155,20 +190,53 @@ func (s *V2EXSite) SignIn(ctx context.Context) Result {
 	return res
 }
 
+// claimOutcome is one run's claim evidence. hint names the claim page when it
+// showed no usable confirmation, so an unexplained failure stays diagnosable.
+type claimOutcome struct {
+	res       Result
+	reward    string
+	confirmed bool
+	hint      string
+	// retry marks an attempt worth repeating: either V2EX answered the redeem
+	// without confirming it, or it asked for the token to be sent again.
+	retry bool
+}
+
+// claim runs the mission flow until an attempt is confirmed or conclusive.
+func (s *V2EXSite) claim(ctx context.Context) claimOutcome {
+	var out claimOutcome
+	for attempt := 1; attempt <= v2exClaimAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				// The previous attempt may still have landed; the ledger is
+				// the only judge, so hand its evidence back unchanged.
+				return out
+			case <-time.After(retryBase):
+			}
+		}
+		out = s.signInOnce(ctx)
+		if !out.retry {
+			return out
+		}
+	}
+	return out
+}
+
 // signInOnce performs the mission flow and returns the reward it could read
 // from the claim pages (a flash message), if any, plus whether the claim was
 // positively confirmed by those pages. The caller resolves the reward against
 // the /balance ledger and decides the final status.
-func (s *V2EXSite) signInOnce(ctx context.Context) (Result, string, bool) {
+func (s *V2EXSite) signInOnce(ctx context.Context) claimOutcome {
 	daily, finalURL, status, err := s.get(ctx, s.baseURL+"/mission/daily")
 	if err != nil {
-		return failure(s.Name(), httpError(err)), "", false
+		return claimOutcome{res: failure(s.Name(), httpError(err))}
 	}
 	if isLoginRedirect(finalURL) || strings.Contains(daily, "You need to sign in") || strings.Contains(daily, "请先登录") {
-		return failure(s.Name(), "Cookie 已失效或未登录（需要 A2，2FA 账号还需 A2O）"), "", false
+		return claimOutcome{res: failure(s.Name(), "Cookie 已失效或未登录（需要 A2，2FA 账号还需 A2O）")}
 	}
 	if status != http.StatusOK {
-		return failure(s.Name(), fmt.Sprintf("签到页返回 HTTP %d", status)), "", false
+		return claimOutcome{res: failure(s.Name(), fmt.Sprintf("签到页返回 HTTP %d", status))}
 	}
 
 	// Before 08:00 UTC+8 the page still carries the previous mission day and,
@@ -176,41 +244,52 @@ func (s *V2EXSite) signInOnce(ctx context.Context) (Result, string, bool) {
 	// Claiming then would target the wrong day, and reporting it as a success
 	// would mark the local day as finished - so wait for the window instead.
 	if day := missionDay(daily); day != "" && day != time.Now().Format("20060102") {
-		return Result{
+		return claimOutcome{res: Result{
 			Site:       s.Name(),
 			Status:     StatusPending,
 			Detail:     fmt.Sprintf("V2EX 当日奖励 08:00 后开放（当前任务日 %s）", day),
 			At:         time.Now(),
 			RetryAfter: nextV2EXWindow(time.Now()),
-		}, "", false
+		}}
 	}
 
 	if strings.Contains(daily, "每日登录奖励已领取") {
-		return Result{
-			Site:   s.Name(),
-			Status: StatusAlready,
-			Detail: "今日已签过",
-			At:     time.Now(),
-		}, extractReward(daily), true
+		return claimOutcome{
+			res: Result{
+				Site:   s.Name(),
+				Status: StatusAlready,
+				Detail: "今日已签过",
+				At:     time.Now(),
+			},
+			reward:    extractReward(daily),
+			confirmed: true,
+		}
 	}
 
 	m := onceRe.FindStringSubmatch(daily)
 	if m == nil {
-		return failure(s.Name(), "未找到签到 token，页面结构可能已变化"), "", false
+		return claimOutcome{res: failure(s.Name(), "未找到签到 token，页面结构可能已变化")}
 	}
 
 	redeemURL := fmt.Sprintf("%s/mission/daily/redeem?once=%s", s.baseURL, url.QueryEscape(m[1]))
-	redeem, _, redeemStatus, err := s.get(ctx, redeemURL)
+	redeem, redeemURLFinal, redeemStatus, err := s.get(ctx, redeemURL)
 	if err != nil {
-		return failure(s.Name(), httpError(err)), "", false
+		return claimOutcome{res: failure(s.Name(), httpError(err))}
+	}
+	if isLoginRedirect(redeemURLFinal) {
+		return claimOutcome{res: failure(s.Name(), "领取时被要求登录（Cookie 已失效，请重新取 A2 与 A2O）")}
 	}
 	if redeemStatus != http.StatusOK {
-		return failure(s.Name(), fmt.Sprintf("领取奖励返回 HTTP %d", redeemStatus)), "", false
+		return claimOutcome{res: failure(s.Name(), fmt.Sprintf("领取奖励返回 HTTP %d", redeemStatus))}
 	}
-	// A stale token is reported with HTTP 200, so it has to be sniffed out of
-	// the body before the success fallback below.
+	// A stale token is reported with HTTP 200 plus "请重新点击一次", which is
+	// V2EX telling us to repeat the claim with the token it now hands out.
 	if strings.Contains(redeem, "请重新点击一次") {
-		return failure(s.Name(), "token 已失效（请重新点击一次以领取每日登录奖励）"), "", false
+		return claimOutcome{
+			res:   failure(s.Name(), "token 已失效（请重新点击一次以领取每日登录奖励）"),
+			hint:  pageHint(redeem),
+			retry: true,
+		}
 	}
 
 	// The "已成功领取" hint only exists on the redeem response, so check both.
@@ -221,13 +300,36 @@ func (s *V2EXSite) signInOnce(ctx context.Context) (Result, string, bool) {
 	}
 	for _, page := range pages {
 		if strings.Contains(page, "每日登录奖励已领取") || rewardRe.MatchString(page) {
-			return Result{Site: s.Name(), Status: StatusSuccess, Detail: "签到成功", At: time.Now()}, extractReward(pages...), true
+			return claimOutcome{
+				res:       Result{Site: s.Name(), Status: StatusSuccess, Detail: "签到成功", At: time.Now()},
+				reward:    extractReward(pages...),
+				confirmed: true,
+			}
 		}
 	}
 	// The redeem endpoint answered 2xx but the pages show no confirmation. This
-	// is what a no-op redeem looks like, so treat it as tentative: the caller
-	// checks the ledger and rejects the claim when today's reward is missing.
-	return Result{Site: s.Name(), Status: StatusSuccess, Detail: "签到成功", At: time.Now()}, extractReward(pages...), false
+	// is what a no-op redeem looks like: repeat it, then let the ledger reject
+	// the claim when today's reward is still missing.
+	return claimOutcome{
+		res:    Result{Site: s.Name(), Status: StatusSuccess, Detail: "签到成功", At: time.Now()},
+		reward: extractReward(pages...),
+		hint:   pageHint(pages...),
+		retry:  true,
+	}
+}
+
+// pageHint names a page by its title, e.g. `标题「V2EX › Sign In」`, so a claim
+// that ends on an unexpected screen says which one. It returns "" when no page
+// carries a title.
+func pageHint(pages ...string) string {
+	for _, page := range pages {
+		if m := titleRe.FindStringSubmatch(page); m != nil {
+			if title := strings.TrimSpace(m[1]); title != "" {
+				return fmt.Sprintf("标题「%s」", title)
+			}
+		}
+	}
+	return ""
 }
 
 // get performs one GET with the session cookie, following redirects. It

@@ -62,7 +62,7 @@ $EDITOR config.yaml
 feishu:
   webhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/...'
 v2ex:
-  cookie: 'A2=...; A2O=...; PB3_SESSION=...'
+  cookie: 'A2=...; A2O=...'
 libra:
   cookie: 'access_token=...'
 ```
@@ -89,7 +89,7 @@ docker compose up -d
 |---|---|
 | `feishu.webhook` | 群自定义机器人 webhook，必填 |
 | `feishu.secret` | 机器人开启签名校验时填写 |
-| `v2ex.cookie` | V2EX 签到。浏览器 Cookie 中的 `A2`、`A2O`（2FA）、`PB3_SESSION`，其余字段可删 |
+| `v2ex.cookie` | V2EX 签到。浏览器 Cookie 中的 `A2`、`A2O`（2FA），其余字段可删；`PB3_SESSION` 由站点下发，填了也会忽略 |
 | `v2ex.token` | V2EX 提醒（API 2.0）。留空则关闭提醒 |
 | `libra.cookie` | 2libra 签到。填 `access_token=...` 或裸 token；被 Cloudflare 拦截时加上 `cf_clearance` |
 
@@ -184,7 +184,7 @@ docker compose pull && docker compose up -d
 | 签到卡片提示 `Cookie 已失效` | 更新 `config.yaml` 中的凭据，执行 `docker compose up -d` |
 | 首次启动没有推送历史提醒 | `reminders.first_run`、`pt.first_run` 默认为 `skip`；改为 `push` 后重启 |
 | 签到成功但群里没有卡片 | 检查飞书 webhook、群机器人状态和容器日志 |
-| V2EX 卡片提示 `签到未生效` | 更新 `v2ex.cookie`，确认包含 `PB3_SESSION` |
+| V2EX 卡片提示 `签到未生效` | 看卡片里 `领取页` 的标题：`Sign In` 说明 cookie 过期，重新取 `A2` + `A2O`；程序已重试 3 次 |
 | PT 卡片提示 `未匹配到签到结果` | 在站点的 `signin` 中配置 `path`、`submit_text`、`success` 或 `already` |
 
 ## 开发

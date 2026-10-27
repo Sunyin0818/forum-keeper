@@ -405,3 +405,178 @@ func TestV2EXSiteAlreadySignedOnCurrentMissionDay(t *testing.T) {
 		t.Fatalf("today's reward missing: %q", res.Detail)
 	}
 }
+
+// TestV2EXSiteRetriesUncreditedRedeem covers the observable 2026-10 failure:
+// the first redeem answers 2xx but credits nothing and the daily page stays
+// claimable, while a repeat does pay. One no-op must not cost the day.
+func TestV2EXSiteRetriesUncreditedRedeem(t *testing.T) {
+	today := time.Now().Format("20060102")
+	var redeems int
+	claimed := false
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			if claimed {
+				w.Write([]byte(`<html><title>V2EX › 日常任务</title>每日登录奖励已领取</html>`))
+				return
+			}
+			w.Write([]byte(fmt.Sprintf(`<html><title>V2EX › 日常任务</title><a href="/mission/daily/redeem?once=1">领取</a></html>`)))
+		case "/mission/daily/redeem":
+			redeems++
+			if redeems == 1 {
+				// 2xx, no flash, no credit - the shape that lost 2026-10-27.
+				w.Write([]byte(`<html><title>V2EX › 日常任务</title>没有确认提示</html>`))
+				return
+			}
+			claimed = true
+			w.Write([]byte(`<html>已成功领取每日登录奖励 9 铜币</html>`))
+		case "/balance":
+			w.Write([]byte(fmt.Sprintf(`<span class="gray">%s 的每日登录奖励 9 铜币</span>`, today)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
+	}
+	if redeems != 2 {
+		t.Fatalf("redeem attempts = %d, want 2", redeems)
+	}
+	if !strings.Contains(res.Detail, "获得 9 铜币") {
+		t.Fatalf("reward missing: %q", res.Detail)
+	}
+}
+
+// TestV2EXSiteRetriesStaleToken: "请重新点击一次" is V2EX asking for the claim
+// again with the token it now serves, so the run must repeat instead of failing.
+func TestV2EXSiteRetriesStaleToken(t *testing.T) {
+	today := time.Now().Format("20060102")
+	var tokens []string
+	claimed := false
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			if claimed {
+				w.Write([]byte(`<html>每日登录奖励已领取</html>`))
+				return
+			}
+			once := "1"
+			if len(tokens) > 0 {
+				once = "2"
+			}
+			w.Write([]byte(fmt.Sprintf(`<a href="/mission/daily/redeem?once=%s">领取</a>`, once)))
+		case "/mission/daily/redeem":
+			once := r.URL.Query().Get("once")
+			tokens = append(tokens, once)
+			if once == "1" {
+				w.Write([]byte(`<html>请重新点击一次以领取每日登录奖励</html>`))
+				return
+			}
+			claimed = true
+			w.Write([]byte(`<html>已成功领取每日登录奖励 4 铜币</html>`))
+		case "/balance":
+			w.Write([]byte(fmt.Sprintf(`<span class="gray">%s 的每日登录奖励 4 铜币</span>`, today)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
+	}
+	if len(tokens) != 2 || tokens[0] != "1" || tokens[1] != "2" {
+		t.Fatalf("redeem tokens = %v, want the second page's token", tokens)
+	}
+}
+
+// TestV2EXSiteRedeemLoginRedirectFails: a claim that lands on /signin means the
+// cookie is dead; repeating it would only hide that.
+func TestV2EXSiteRedeemLoginRedirectFails(t *testing.T) {
+	var redeems int
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=1">领取</a>`))
+		case "/mission/daily/redeem":
+			redeems++
+			http.Redirect(w, r, "/signin?next=%2Fmission%2Fdaily", http.StatusFound)
+		default:
+			w.Write([]byte(`<html>V2EX › Sign In</html>`))
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("a rejected claim must fail, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "Cookie") {
+		t.Fatalf("detail should name the cookie: %q", res.Detail)
+	}
+	if redeems != 1 {
+		t.Fatalf("redeem attempts = %d, want 1 (a login redirect is conclusive)", redeems)
+	}
+}
+
+// TestV2EXSiteUnconfirmedClaimNamesPage: when every attempt comes back without
+// a confirmation, the card must say which page the claim ended on.
+func TestV2EXSiteUnconfirmedClaimNamesPage(t *testing.T) {
+	yesterday := time.Now().AddDate(0, 0, -1).Format("20060102")
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=98765">领取</a>`))
+		case "/mission/daily/redeem":
+			w.Write([]byte(`<html><title>V2EX › Sign In</title>no flash here</html>`))
+		case "/balance":
+			w.Write([]byte(fmt.Sprintf(`<span class="gray">%s 的每日登录奖励 8 铜币</span>`, yesterday)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("an unconfirmed claim must fail, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "未生效") || !strings.Contains(res.Detail, "Sign In") {
+		t.Fatalf("detail should name the page it ended on: %q", res.Detail)
+	}
+}
+
+// TestV2EXSiteIgnoresConfiguredSessionCookie: V2EX sets PB3_SESSION itself with
+// a five-day expiry and skips it when the request carries one, so a stale copy
+// from the config would shadow the fresh cookie for the whole run.
+func TestV2EXSiteIgnoresConfiguredSessionCookie(t *testing.T) {
+	var dailyCookie, redeemCookie string
+	claimed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/mission/daily" && !claimed:
+			dailyCookie = r.Header.Get("Cookie")
+			http.SetCookie(w, &http.Cookie{Name: "PB3_SESSION", Value: "fresh-from-v2ex"})
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=1">领取</a>`))
+		case r.URL.Path == "/mission/daily/redeem":
+			redeemCookie = r.Header.Get("Cookie")
+			claimed = true
+			w.Write([]byte(`<html>已成功领取每日登录奖励 3 铜币</html>`))
+		default:
+			w.Write([]byte(`<html>每日登录奖励已领取</html>`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	site := NewV2EXSite(`A2=secret; PB3_SESSION="2|1:0|10:1791338321|11:PB3_SESSION|40:stale|sig"`, srv.URL, 5*time.Second)
+	res := site.SignIn(context.Background())
+	if res.Status != StatusSuccess {
+		t.Fatalf("status = %q, want success (detail=%q)", res.Status, res.Detail)
+	}
+	if strings.Contains(dailyCookie, "PB3_SESSION") {
+		t.Fatalf("the stale configured PB3_SESSION must not be sent: %q", dailyCookie)
+	}
+	if !strings.Contains(redeemCookie, "PB3_SESSION=fresh-from-v2ex") {
+		t.Fatalf("redeem Cookie = %q, want the cookie V2EX issued", redeemCookie)
+	}
+}
