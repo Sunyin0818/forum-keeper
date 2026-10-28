@@ -580,3 +580,29 @@ func TestV2EXSiteIgnoresConfiguredSessionCookie(t *testing.T) {
 		t.Fatalf("redeem Cookie = %q, want the cookie V2EX issued", redeemCookie)
 	}
 }
+
+// TestV2EXSiteUnconfirmedClaimReportsFlash: when V2EX renders a flash instead
+// of claiming, that text is the only clue the card and log can carry.
+func TestV2EXSiteUnconfirmedClaimReportsFlash(t *testing.T) {
+	yesterday := time.Now().AddDate(0, 0, -1).Format("20060102")
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=98765">领取</a>`))
+		case "/mission/daily/redeem":
+			w.Write([]byte(`<div class="cell"><div class="message" onclick="hide()"><li class="fa fa-warning"></li>&nbsp; 领取每日登录奖励失败，请稍后再试</div></div>`))
+		case "/balance":
+			w.Write([]byte(fmt.Sprintf(`<span class="gray">%s 的每日登录奖励 8 铜币</span>`, yesterday)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("an unconfirmed claim must fail, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "领取每日登录奖励失败") {
+		t.Fatalf("detail should quote the flash V2EX rendered: %q", res.Detail)
+	}
+}

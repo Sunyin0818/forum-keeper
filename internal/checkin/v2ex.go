@@ -3,7 +3,9 @@ package checkin
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -42,6 +44,12 @@ var (
 	// titleRe reads the page title, which is the cheapest way to name a page
 	// the claim flow did not expect (a login or challenge screen).
 	titleRe = regexp.MustCompile(`(?is)<title>\s*(.*?)\s*</title>`)
+	// flashRe captures one flash message, which is where V2EX explains a claim
+	// it did not perform ("请重新点击一次…", "领取失败…").
+	flashRe = regexp.MustCompile(`(?is)<div class="message"[^>]*>(.*?)</div>`)
+	// htmlScriptRe and htmlTagRe flatten a page to text for diagnostics.
+	htmlScriptRe = regexp.MustCompile(`(?is)<script.*?</script>|<style.*?</style>`)
+	htmlTagRe    = regexp.MustCompile(`<[^>]+>`)
 )
 
 const (
@@ -287,7 +295,7 @@ func (s *V2EXSite) signInOnce(ctx context.Context) claimOutcome {
 	if strings.Contains(redeem, "请重新点击一次") {
 		return claimOutcome{
 			res:   failure(s.Name(), "token 已失效（请重新点击一次以领取每日登录奖励）"),
-			hint:  pageHint(redeem),
+			hint:  claimPageDetail(redeem),
 			retry: true,
 		}
 	}
@@ -309,19 +317,32 @@ func (s *V2EXSite) signInOnce(ctx context.Context) claimOutcome {
 	}
 	// The redeem endpoint answered 2xx but the pages show no confirmation. This
 	// is what a no-op redeem looks like: repeat it, then let the ledger reject
-	// the claim when today's reward is still missing.
+	// the claim when today's reward is still missing. The page is logged with
+	// its flash text so the reason survives even when the card stays short.
+	hint := claimPageDetail(pages...)
+	slog.Default().Warn("v2ex: claim not confirmed",
+		"redeem_status", redeemStatus,
+		"final_url", redeemURLFinal,
+		"page", hint,
+		"excerpt", textExcerpt(redeem, 240),
+	)
 	return claimOutcome{
 		res:    Result{Site: s.Name(), Status: StatusSuccess, Detail: "签到成功", At: time.Now()},
 		reward: extractReward(pages...),
-		hint:   pageHint(pages...),
+		hint:   hint,
 		retry:  true,
 	}
 }
 
-// pageHint names a page by its title, e.g. `标题「V2EX › Sign In」`, so a claim
-// that ends on an unexpected screen says which one. It returns "" when no page
-// carries a title.
-func pageHint(pages ...string) string {
+// claimPageDetail names the page a claim ended on: the flash message when V2EX
+// rendered one, otherwise its title. An empty string means no page carried
+// either.
+func claimPageDetail(pages ...string) string {
+	for _, page := range pages {
+		if flash := flashText(page); flash != "" {
+			return fmt.Sprintf("提示「%s」", flash)
+		}
+	}
 	for _, page := range pages {
 		if m := titleRe.FindStringSubmatch(page); m != nil {
 			if title := strings.TrimSpace(m[1]); title != "" {
@@ -330,6 +351,41 @@ func pageHint(pages ...string) string {
 		}
 	}
 	return ""
+}
+
+// flashText reads the first flash message V2EX renders, e.g. "请重新点击一次
+// 以领取每日登录奖励". It is plain text with tags stripped.
+func flashText(page string) string {
+	for _, m := range flashRe.FindAllStringSubmatch(page, -1) {
+		if text := textExcerpt(m[1], 120); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// textExcerpt flattens html to plain text and returns at most limit runes,
+// preferring the stretch around the daily-bonus wording.
+func textExcerpt(page string, limit int) string {
+	text := htmlTagRe.ReplaceAllString(htmlScriptRe.ReplaceAllString(page, " "), " ")
+	text = strings.Join(strings.Fields(html.UnescapeString(text)), " ")
+	if text == "" {
+		return ""
+	}
+	if i := strings.Index(text, "每日登录奖励"); i > 0 {
+		start := i - 40
+		if start < 0 {
+			start = 0
+		}
+		text = text[start:]
+	}
+	if limit <= 0 {
+		return ""
+	}
+	if runes := []rune(text); len(runes) > limit {
+		return string(runes[:limit]) + "…"
+	}
+	return text
 }
 
 // get performs one GET with the session cookie, following redirects. It
