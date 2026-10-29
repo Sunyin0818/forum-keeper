@@ -20,6 +20,7 @@ v2ex:
   cookie: ''
   # 提醒用（API 2.0）：https://www.v2ex.com/settings/tokens
   # 留空则不轮询提醒。API Token 与网页 Cookie 是两套认证，不能互换。
+  # 令牌有有效期（最长 180 天），过期后轮询报 401 Token expired，需重新创建。
   token: ''
   # 高级：自建镜像或测试时改这两个，一般不用动。
   # api_base_url: 'https://www.v2ex.com/api/v2'

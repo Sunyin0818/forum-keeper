@@ -181,7 +181,8 @@ docker compose pull && docker compose up -d
 
 | 现象 | 处理 |
 |---|---|
-| 签到卡片提示 `Cookie 已失效` | 更新 `config.yaml` 中的凭据，执行 `docker compose up -d` |
+| 签到卡片提示 `Cookie 已失效` | 更新 `config.yaml` 中的凭据，执行 `docker compose restart forum-keeper`（`up -d` 不会因挂载的配置文件变化而重启） |
+| 提醒轮询报 `401` / `Token expired` | V2EX API 令牌有有效期（最长 180 天），去 <https://www.v2ex.com/settings/tokens> 新建一个，更新 `v2ex.token` 后 `docker compose restart forum-keeper` |
 | 首次启动没有推送历史提醒 | `reminders.first_run`、`pt.first_run` 默认为 `skip`；改为 `push` 后重启 |
 | 签到成功但群里没有卡片 | 检查飞书 webhook、群机器人状态和容器日志 |
 | V2EX 卡片提示 `签到未生效` | 看卡片里的 `领取页`：提示「浏览器设置有奇奇怪怪的地方」= cookie 缺 `V2EX_TAB`，把浏览器 Cookie 整串重新复制；标题 `Sign In` = cookie 已过期 |
