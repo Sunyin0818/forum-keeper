@@ -92,6 +92,10 @@ type V2EXSite struct {
 // issues it with a five-day expiry and only when the request does not already
 // carry one, so a value copied from a browser shadows the fresh cookie and
 // leaves the claim running on a session the site no longer hands out.
+//
+// V2EX_TAB must come from the config. Measured 2026-10-29: without that cookie
+// the redeem answers "你的浏览器有一些奇奇怪怪的设置" and credits nothing,
+// while the same request with A2, A2O and V2EX_TAB pays out.
 func NewV2EXSite(cookie, baseURL string, timeout time.Duration) *V2EXSite {
 	if baseURL == "" {
 		baseURL = DefaultBaseURLV2EX
@@ -289,6 +293,14 @@ func (s *V2EXSite) signInOnce(ctx context.Context) claimOutcome {
 	}
 	if redeemStatus != http.StatusOK {
 		return claimOutcome{res: failure(s.Name(), fmt.Sprintf("领取奖励返回 HTTP %d", redeemStatus))}
+	}
+	// V2EX refuses a claim it reads as automated with a flash about the
+	// browser. Measured 2026-10-29: the trigger is a missing V2EX_TAB cookie
+	// (the site's own tab state), which hand-trimmed cookies lose; A2, A2O and
+	// V2EX_TAB are the set that works. Repeating the claim cannot fix this.
+	if strings.Contains(redeem, "奇奇怪怪的设置") {
+		return claimOutcome{res: failure(s.Name(),
+			"Cookie 不完整（V2EX 提示浏览器设置异常，领取需要 A2、A2O、V2EX_TAB，请整串复制）")}
 	}
 	// A stale token is reported with HTTP 200 plus "请重新点击一次", which is
 	// V2EX telling us to repeat the claim with the token it now hands out.

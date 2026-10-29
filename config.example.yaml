@@ -13,9 +13,9 @@ feishu:
   secret: ''
 
 v2ex:
-  # 签到用：浏览器 Cookie 里的 A2、A2O（2FA）。
-  # F12 → Application → Cookies → https://www.v2ex.com
-  # 只保留认证字段即可，V2EX_LANG / _ga 这类非认证项可以删。
+  # 签到用：浏览器 Cookie 整串复制（A2、A2O、V2EX_TAB 等都要）。
+  # F12 → Network → 刷新首页 → 请求头里的 Cookie 整行。
+  # V2EX_TAB 不能省：少了它领取时会被判定「浏览器设置有奇奇怪怪的地方」。
   # PB3_SESSION 由站点下发（5 天过期），填了也会被忽略。
   cookie: ''
   # 提醒用（API 2.0）：https://www.v2ex.com/settings/tokens

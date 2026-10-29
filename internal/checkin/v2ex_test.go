@@ -606,3 +606,36 @@ func TestV2EXSiteUnconfirmedClaimReportsFlash(t *testing.T) {
 		t.Fatalf("detail should quote the flash V2EX rendered: %q", res.Detail)
 	}
 }
+
+// TestV2EXSiteIncompleteCookieNamesTheMissingField: V2EX refuses claims from a
+// cookie set without V2EX_TAB and says the browser looks strange. That is a
+// configuration problem, so the card must name the missing field instead of
+// repeating the claim.
+func TestV2EXSiteIncompleteCookieNamesTheMissingField(t *testing.T) {
+	yesterday := time.Now().AddDate(0, 0, -1).Format("20060102")
+	var redeems int
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mission/daily":
+			w.Write([]byte(`<a href="/mission/daily/redeem?once=98765">领取</a>`))
+		case "/mission/daily/redeem":
+			redeems++
+			w.Write([]byte(`<div class="message">你的浏览器有一些奇奇怪怪的设置，请用一个干净安装的浏览器重试一下吧</div>`))
+		case "/balance":
+			w.Write([]byte(fmt.Sprintf(`<span class="gray">%s 的每日登录奖励 8 铜币</span>`, yesterday)))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("a rejected claim must fail, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "V2EX_TAB") {
+		t.Fatalf("detail should name the missing cookie: %q", res.Detail)
+	}
+	if redeems != 1 {
+		t.Fatalf("redeem attempts = %d, want 1 (a missing cookie is not retryable)", redeems)
+	}
+}
