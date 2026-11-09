@@ -45,7 +45,9 @@ mkdir -p forum-keeper
 cp compose.yaml config.example.yaml forum-keeper/
 cd forum-keeper
 cp config.example.yaml config.yaml
-chmod 600 config.yaml
+# 容器以 UID/GID 10001 只读挂载配置，属组 10001 必须可读；其他用户仍不可读
+sudo chown root:10001 config.yaml
+sudo chmod 640 config.yaml
 ```
 
 `config.yaml` 里有凭据，按 secret 管理：不要提交进 Git，也不要打进镜像。

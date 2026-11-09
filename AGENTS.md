@@ -92,8 +92,10 @@ HTTP 一律用 `httptest`，端到端用 `scripts/smoke.sh` + `scripts/mockserve
   `config.example.yaml` 和 README 表格。
 - 环境变量是覆盖层（`FEISHU_WEBHOOK`、`V2EX_COOKIE`、`CHECKIN_TIME`、`TZ` 等），
   用于一次性运行和 CI；文件是主来源。
-- secret 只放 `config.yaml`：600、gitignored、不进镜像（`.dockerignore` 已排除
-  `config.yaml`）。PT 站点可直接写 `cookie`；需要提交站点列表时改用 `cookie_env`
+- secret 只放 `config.yaml`：gitignored、不进镜像（`.dockerignore` 已排除
+  `config.yaml`）。容器以 UID/GID 10001 只读挂载它，部署机上用
+  `chown root:10001 config.yaml && chmod 640 config.yaml`（0600 会让容器读不到）；
+  本地开发可 600。PT 站点可直接写 `cookie`；需要提交站点列表时改用 `cookie_env`
   引用环境变量。
 - 新增凭据要保证：日志、错误、卡片、状态库都不出现原值。
 
