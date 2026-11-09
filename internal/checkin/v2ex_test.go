@@ -83,6 +83,43 @@ func TestV2EXSiteExpiredCookie(t *testing.T) {
 	}
 }
 
+func TestV2EXSiteTwoFactorExpired(t *testing.T) {
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mission/daily" {
+			http.Redirect(w, r, "/2fa", http.StatusFound)
+			return
+		}
+		w.Write([]byte(`<html><head><title>V2EX › 两步验证登录</title></head><body>两步验证</body></html>`))
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("an expired A2O must fail, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "两步验证") || !strings.Contains(res.Detail, "A2O") {
+		t.Fatalf("detail should name the expired second factor: %q", res.Detail)
+	}
+}
+
+func TestV2EXSiteCloudflareChallenge(t *testing.T) {
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("CF-Mitigated", "challenge")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`<html><head><title>Just a moment...</title></head></html>`))
+	})
+
+	res := site.SignIn(context.Background())
+	if res.OK() {
+		t.Fatalf("a challenge must fail, got %+v", res)
+	}
+	if !strings.Contains(res.Detail, "Cloudflare") {
+		t.Fatalf("detail should name the block, not a status code: %q", res.Detail)
+	}
+	if strings.Contains(res.Detail, "页面结构") {
+		t.Fatalf("a challenge is not a markup change: %q", res.Detail)
+	}
+}
+
 func TestV2EXSiteMissingToken(t *testing.T) {
 	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>签到页没有 once 链接</html>`))

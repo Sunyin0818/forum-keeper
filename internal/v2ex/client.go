@@ -19,6 +19,12 @@ import (
 // Callers should treat this as fatal and require a token rotation.
 var ErrUnauthorized = errors.New("v2ex: unauthorized (token invalid or expired)")
 
+// ErrBlocked is returned when Cloudflare in front of V2EX serves a bot
+// challenge instead of the API. The request never reached V2EX, so the token
+// may well be valid: rotating it cannot help, while the challenge often
+// clears on its own or after the egress IP changes.
+var ErrBlocked = errors.New("v2ex: blocked by Cloudflare challenge (request never reached the API)")
+
 const (
 	maxAttempts = 3
 	userAgent   = "forum-keeper/1.0 (+https://github.com/Sunyin0818/forum-keeper)"
@@ -164,6 +170,11 @@ func (c *Client) attempt(ctx context.Context, method, rawURL string, body []byte
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
+	// V2EX's Cloudflare edge began challenging bare API clients in 2026-11.
+	// Measured 2026-11-09: UA+Accept alone gets a managed challenge, while the
+	// same request plus Accept-Language is passed through - and that challenge
+	// is what made a valid token look expired.
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	req.Header.Set("User-Agent", userAgent)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -180,6 +191,9 @@ func (c *Client) attempt(ctx context.Context, method, rawURL string, body []byte
 	c.captureRateLimit(resp.Header)
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if isCloudflareChallenge(resp) {
+			return false, fmt.Errorf("%w: HTTP %d", ErrBlocked, resp.StatusCode)
+		}
 		return false, fmt.Errorf("%w: HTTP %d", ErrUnauthorized, resp.StatusCode)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -217,6 +231,29 @@ func (c *Client) captureRateLimit(h http.Header) {
 func readSnippet(r io.Reader) string {
 	b, _ := io.ReadAll(io.LimitReader(r, 512))
 	return strings.TrimSpace(string(b))
+}
+
+// isCloudflareChallenge reports whether resp is the interstitial Cloudflare
+// serves before V2EX sees the request. CF-Mitigated is the cheap signal and
+// the marker is present on every managed challenge observed in 2026-11; the
+// page title is the fallback for responses that strip it.
+func isCloudflareChallenge(resp *http.Response) bool {
+	if strings.EqualFold(strings.TrimSpace(resp.Header.Get("CF-Mitigated")), "challenge") {
+		return true
+	}
+	if resp.Body == nil {
+		return false
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return isChallengeHTML(string(b))
+}
+
+// isChallengeHTML matches the title/script markers of a Cloudflare challenge
+// page.
+func isChallengeHTML(page string) bool {
+	return strings.Contains(page, "<title>Just a moment...</title>") ||
+		strings.Contains(page, "Attention Required! | Cloudflare") ||
+		strings.Contains(page, "window._cf_chl_opt")
 }
 
 func atoiDefault(s string) int {

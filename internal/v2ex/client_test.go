@@ -63,6 +63,32 @@ func TestUnauthorizedIsNotRetried(t *testing.T) {
 	}
 }
 
+func TestCloudflareChallengeIsNotTokenRejection(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("CF-Mitigated", "challenge")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<html><head><title>Just a moment...</title></head></html>`))
+	}))
+	defer srv.Close()
+
+	c, err := NewClient("tok", srv.URL, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = c.Notifications(context.Background(), 1)
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("expected ErrBlocked, got %v", err)
+	}
+	if errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("a challenge must not be reported as a rejected token: %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("expected 1 attempt, got %d", got)
+	}
+}
+
 func TestServerErrorIsRetried(t *testing.T) {
 	old := backoffBase
 	backoffBase = time.Millisecond

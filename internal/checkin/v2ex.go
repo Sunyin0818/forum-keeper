@@ -247,7 +247,18 @@ func (s *V2EXSite) signInOnce(ctx context.Context) claimOutcome {
 	if isLoginRedirect(finalURL) || strings.Contains(daily, "You need to sign in") || strings.Contains(daily, "请先登录") {
 		return claimOutcome{res: failure(s.Name(), "Cookie 已失效或未登录（需要 A2，2FA 账号还需 A2O）")}
 	}
+	// An expired A2O (the two-step verification session) lands here: A2 still
+	// names the account, but V2EX refuses the mission page until the second
+	// factor is passed again.
+	if isTwoFactorRedirect(finalURL) || strings.Contains(daily, "两步验证") {
+		return claimOutcome{res: failure(s.Name(),
+			"两步验证未通过（A2O 已失效），请重新登录后更新 cookie（A2、A2O、V2EX_TAB 整串复制）")}
+	}
 	if status != http.StatusOK {
+		if isChallengePage(daily) {
+			return claimOutcome{res: failure(s.Name(), fmt.Sprintf(
+				"V2EX 被 Cloudflare 人机验证拦截（签到页 HTTP %d），请求未到达站点；换出口 IP 或稍后重试，刷新 cookie 无效", status))}
+		}
 		return claimOutcome{res: failure(s.Name(), fmt.Sprintf("签到页返回 HTTP %d", status))}
 	}
 
@@ -291,7 +302,15 @@ func (s *V2EXSite) signInOnce(ctx context.Context) claimOutcome {
 	if isLoginRedirect(redeemURLFinal) {
 		return claimOutcome{res: failure(s.Name(), "领取时被要求登录（Cookie 已失效，请重新取 A2 与 A2O）")}
 	}
+	if isTwoFactorRedirect(redeemURLFinal) {
+		return claimOutcome{res: failure(s.Name(),
+			"领取时被要求两步验证（A2O 已失效），请重新登录后更新 cookie")}
+	}
 	if redeemStatus != http.StatusOK {
+		if isChallengePage(redeem) {
+			return claimOutcome{res: failure(s.Name(), fmt.Sprintf(
+				"领取奖励被 Cloudflare 人机验证拦截（HTTP %d），请求未到达站点", redeemStatus))}
+		}
 		return claimOutcome{res: failure(s.Name(), fmt.Sprintf("领取奖励返回 HTTP %d", redeemStatus))}
 	}
 	// V2EX refuses a claim it reads as automated with a flash about the
@@ -413,16 +432,14 @@ func (s *V2EXSite) get(ctx context.Context, rawURL string) (body, finalURL strin
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 		req.Header.Set("Referer", s.baseURL+"/mission/daily")
-		// Match a top-level browser navigation: V2EX rejected a claim that only
-		// carried A2/A2O, and these hints are cheap to mirror.
+		// Sec-Fetch-* and sec-ch-ua are deliberately absent. They made the
+		// request look like a browser to V2EX itself, but since 2026-11-09
+		// Cloudflare's bot rules in front of V2EX challenge exactly this
+		// combination (Go's TLS fingerprint plus browser hint headers) with a
+		// 403 before the request reaches the site. The plain navigation header
+		// set below is accepted; the claim's real requirements are the cookies
+		// (A2, A2O, V2EX_TAB).
 		req.Header.Set("Upgrade-Insecure-Requests", "1")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		req.Header.Set("Sec-Fetch-Mode", "navigate")
-		req.Header.Set("Sec-Fetch-User", "?1")
-		req.Header.Set("Sec-Fetch-Dest", "document")
-		req.Header.Set("sec-ch-ua", `"Chromium";v="137", "Not/A)Brand";v="24"`)
-		req.Header.Set("sec-ch-ua-mobile", "?0")
-		req.Header.Set("sec-ch-ua-platform", `"macOS"`)
 		// The jar already carries the configured cookies once seeded; fall back
 		// to the raw header only when it could not be built.
 		if s.hc.Jar == nil && s.cookie != "" {
@@ -534,6 +551,28 @@ func isLoginRedirect(rawURL string) bool {
 		return false
 	}
 	return strings.HasPrefix(u.Path, "/signin")
+}
+
+// isTwoFactorRedirect reports whether the request landed on V2EX's two-step
+// verification page. V2EX sends a session whose A2O cookie has expired there
+// while A2 still identifies the account, so this is not a cookie syntax error
+// but a second factor that must be passed again.
+func isTwoFactorRedirect(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(u.Path, "/2fa")
+}
+
+// isChallengePage reports whether body is Cloudflare's challenge interstitial,
+// which V2EX's edge serves before the request reaches the site. Its title and
+// challenge script are stable markers; looking at the page is enough because
+// get() does not hand back response headers.
+func isChallengePage(body string) bool {
+	return strings.Contains(body, "<title>Just a moment...</title>") ||
+		strings.Contains(body, "Attention Required! | Cloudflare") ||
+		strings.Contains(body, "window._cf_chl_opt")
 }
 
 // withReward renders detail with the reward as a parenthesised suffix, e.g.
