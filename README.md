@@ -91,7 +91,8 @@ docker compose up -d
 |---|---|
 | `feishu.webhook` | 群自定义机器人 webhook，必填 |
 | `feishu.secret` | 机器人开启签名校验时填写 |
-| `v2ex.cookie` | V2EX 签到。浏览器 Cookie **整串**复制：`A2`、`A2O`（2FA）、`V2EX_TAB` 缺一不可（少了 `V2EX_TAB` 会被判「浏览器设置有奇奇怪怪的地方」）；`PB3_SESSION` 由站点下发，填了也会忽略 |
+| `v2ex.cookie` | V2EX 签到。浏览器 Cookie **整串**复制：`A2`、`A2O`（2FA）、`V2EX_TAB` 缺一不可（少了 `V2EX_TAB` 会被判「浏览器设置有奇奇怪怪的地方」）；`PB3_SESSION` 由站点下发，填了也会忽略。程序每天访问一次首页续期 `A2O`/`V2EX_TAB`，续期结果写 `v2ex.cookie_file`，config 只作为首次种子 |
+| `v2ex.cookie_file` | 续期后的会话 Cookie 落盘位置，默认与 `state.db` 同目录的 `v2ex_cookie`（容器里是 `/data/v2ex_cookie`），0600 |
 | `v2ex.token` | V2EX 提醒（API 2.0）。留空则关闭提醒 |
 | `libra.cookie` | 2libra 签到。填 `access_token=...` 或裸 token；被 Cloudflare 拦截时加上 `cf_clearance` |
 
@@ -184,7 +185,7 @@ docker compose pull && docker compose up -d
 | 现象 | 处理 |
 |---|---|
 | 签到卡片提示 `Cookie 已失效` | 更新 `config.yaml` 中的凭据，执行 `docker compose restart forum-keeper`（`up -d` 不会因挂载的配置文件变化而重启） |
-| 签到卡片提示 `两步验证未通过` | `A2O` 过期。浏览器重新登录 V2EX 并完成两步验证，整串复制 `A2`、`A2O`、`V2EX_TAB` 更新 `v2ex.cookie` 后重启；当天想补签用 `docker compose run --rm forum-keeper --checkin` |
+| 签到卡片提示 `两步验证未通过` | 正常运行时程序每天续期 `A2O`，出现这条说明续期已失败（容器停了超过一个月，或 V2EX 主动要求重新验证）。浏览器重新登录并完成两步验证，整串复制 `A2`、`A2O`、`V2EX_TAB` 更新 `v2ex.cookie` 后重启；当天想补签用 `docker compose run --rm forum-keeper --checkin`。删掉 `/data/v2ex_cookie` 可强制回到 config 里的 cookie |
 | 日志出现 `人机验证` / `blocked by Cloudflare` | 请求被 Cloudflare 拦在 V2EX 之外，token/cookie 未必失效：换出口 IP 或等风控解除，不要为此轮换 token |
 | 提醒轮询报 `401` / `Token expired` | V2EX API 令牌有有效期（最长 180 天），去 <https://www.v2ex.com/settings/tokens> 新建一个，更新 `v2ex.token` 后 `docker compose restart forum-keeper` |
 | 首次启动没有推送历史提醒 | `reminders.first_run`、`pt.first_run` 默认为 `skip`；改为 `push` 后重启 |

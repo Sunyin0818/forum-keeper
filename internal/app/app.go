@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -26,6 +27,10 @@ const (
 	alertMinInterval      = 30 * time.Minute
 	// checkinRunTimeout bounds one scheduled run including card retries.
 	checkinRunTimeout = 10 * time.Minute
+	// v2exRefreshInterval keeps the sliding V2EX session alive: A2O slides to
+	// 30 days and V2EX_TAB to 14 on every authenticated visit, so a daily
+	// visit renews both with plenty of margin.
+	v2exRefreshInterval = 24 * time.Hour
 )
 
 // checkinCardAttempts and checkinCardRetryBase bound the retry of the check-in
@@ -172,6 +177,7 @@ func NewWithDeps(cfg *config.Config, logger *slog.Logger, dryRun bool, src Fetch
 		a.closer = closer.Close
 	}
 	a.sites = buildCheckinSites(cfg)
+	a.restoreV2EXCookie()
 	a.ptPollInterval = cfg.PT.PollInterval
 	if a.ptPollInterval < time.Minute {
 		a.ptPollInterval = 2 * time.Hour
@@ -214,6 +220,116 @@ func buildCheckinSites(cfg *config.Config) []checkin.Site {
 // SetCheckinSites overrides the configured sites (used by tests).
 func (a *App) SetCheckinSites(sites []checkin.Site) {
 	a.sites = sites
+}
+
+// v2exCookieFile is where the renewed V2EX session cookie lives. The config
+// file is mounted read-only in the container, so renewals are written next to
+// the state database instead, which is the only writable mount by design.
+func v2exCookieFile(cfg *config.Config) string {
+	if path := strings.TrimSpace(cfg.V2EX.CookieFile); path != "" {
+		return path
+	}
+	return filepath.Join(filepath.Dir(cfg.Server.StatePath), "v2ex_cookie")
+}
+
+// v2exSite returns the V2EX check-in site, or nil when its cookie is not
+// configured.
+func (a *App) v2exSite() *checkin.V2EXSite {
+	for _, site := range a.sites {
+		if v2exSite, ok := site.(*checkin.V2EXSite); ok {
+			return v2exSite
+		}
+	}
+	return nil
+}
+
+// restoreV2EXCookie prefers the cookie the previous process renewed over the
+// one in the read-only config file. A missing file is normal: the config
+// cookie is the seed. A config file newer than the renewal file means the user
+// just pasted a fresh cookie, and that must win over the stale renewal.
+func (a *App) restoreV2EXCookie() {
+	site := a.v2exSite()
+	if site == nil {
+		return
+	}
+	path := v2exCookieFile(a.cfg)
+	info, err := os.Stat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			a.log.Warn("could not read renewed V2EX cookie", "path", path, "err", err)
+		}
+		return
+	}
+	if src := strings.TrimSpace(a.cfg.SourcePath); src != "" {
+		if srcInfo, serr := os.Stat(src); serr == nil && srcInfo.ModTime().After(info.ModTime()) {
+			a.log.Info("config.yaml is newer than the renewed V2EX cookie; using config",
+				"config", src, "cookie_file", path)
+			return
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		a.log.Warn("could not read renewed V2EX cookie", "path", path, "err", err)
+		return
+	}
+	cookie := strings.TrimSpace(string(raw))
+	if cookie == "" {
+		return
+	}
+	site.SetCookie(cookie)
+	a.log.Info("using renewed V2EX session cookie", "path", path)
+}
+
+// refreshV2EXSession renews the sliding A2O/V2EX_TAB cookies and persists the
+// result. Failures are logged, not fatal: the check-in itself still reports the
+// session problem on its card.
+func (a *App) refreshV2EXSession(ctx context.Context) {
+	site := a.v2exSite()
+	if site == nil {
+		return
+	}
+	cookie, err := site.RefreshSession(ctx)
+	if err != nil {
+		a.log.Warn("V2EX session refresh failed", "err", err)
+		return
+	}
+	if a.dryRun {
+		a.log.Info("dry-run: V2EX session refreshed")
+		return
+	}
+	path := v2exCookieFile(a.cfg)
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			a.log.Warn("could not create cookie directory", "path", dir, "err", err)
+			return
+		}
+	}
+	if err := os.WriteFile(path, []byte(cookie+"\n"), 0o600); err != nil {
+		a.log.Warn("could not persist renewed V2EX cookie", "path", path, "err", err)
+		return
+	}
+	// os.WriteFile keeps the mode of an existing file; force credentials-only.
+	if err := os.Chmod(path, 0o600); err != nil {
+		a.log.Warn("could not restrict renewed cookie file", "path", path, "err", err)
+	}
+	a.log.Info("V2EX session refreshed", "path", path)
+}
+
+// v2exRefreshLoop keeps the V2EX web session alive. V2EX slides A2O to 30 days
+// and V2EX_TAB to 14 days on every authenticated visit, so one request a day
+// renews both with margin; the first refresh runs at startup.
+func (a *App) v2exRefreshLoop(ctx context.Context) {
+	a.refreshV2EXSession(ctx)
+	ticker := time.NewTicker(v2exRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.refreshV2EXSession(ctx)
+		}
+	}
 }
 
 // Close releases resources held by the app.
@@ -403,6 +519,11 @@ func (a *App) Run(ctx context.Context) error {
 		// when CHECKIN_ON_START is disabled.
 		a.retryAt = time.Now().Add(time.Minute)
 	}
+	if a.v2exSite() != nil {
+		// Keep the web session's A2O/V2EX_TAB sliding; the first refresh runs
+		// immediately, so a restart picks up a renewed cookie right away.
+		go a.v2exRefreshLoop(ctx)
+	}
 	if len(a.sites) > 0 || a.ptRunner != nil {
 		a.maybeCheckinOnStart(ctx)
 		go a.checkinLoop(ctx)
@@ -445,6 +566,10 @@ func (a *App) RunCheckins(ctx context.Context) error {
 // loop. The public RunCheckins (CLI / startup) keeps the historical
 // "always run" behaviour.
 func (a *App) runCheckins(ctx context.Context, force bool) error {
+	// A one-shot --checkin must renew the session too: cron-style deployments
+	// never start the long-running refresh loop. The mutex inside the site
+	// serialises this against the daemon's own refresh.
+	a.refreshV2EXSession(ctx)
 	var forumResults, ptResults []checkin.Result
 	if len(a.sites) > 0 && (force || !a.legacyCheckinDoneToday()) {
 		forumResults = checkin.Run(ctx, a.log, a.sites)

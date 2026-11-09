@@ -6,3 +6,4 @@ data/
 *.test
 coverage.out
 __pycache__/
+v2ex_cookie

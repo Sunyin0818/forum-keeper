@@ -120,6 +120,78 @@ func TestV2EXSiteCloudflareChallenge(t *testing.T) {
 	}
 }
 
+func TestV2EXRefreshSessionRotatesCookies(t *testing.T) {
+	var seen []string
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			t.Errorf("refresh must visit the homepage, got %q", r.URL.Path)
+		}
+		seen = append(seen, r.Header.Get("Cookie"))
+		http.SetCookie(w, &http.Cookie{Name: "A2O", Value: "fresh-a2o", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "V2EX_TAB", Value: "fresh-tab", Path: "/"})
+		w.Write([]byte(`<html>home</html>`))
+	})
+
+	cookie, err := site.RefreshSession(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshSession: %v", err)
+	}
+	if !strings.Contains(cookie, "A2O=fresh-a2o") || !strings.Contains(cookie, "V2EX_TAB=fresh-tab") {
+		t.Fatalf("renewed cookies missing from %q", cookie)
+	}
+	if !strings.Contains(cookie, "A2=secret") {
+		t.Fatalf("untouched cookies must survive: %q", cookie)
+	}
+
+	// The renewal must be what the next request carries, otherwise the site
+	// would keep seeing the expired A2O.
+	if _, err := site.RefreshSession(context.Background()); err != nil {
+		t.Fatalf("second RefreshSession: %v", err)
+	}
+	if len(seen) != 2 || !strings.Contains(seen[1], "A2O=fresh-a2o") {
+		t.Fatalf("second request did not carry the renewed cookie: %v", seen)
+	}
+}
+
+func TestV2EXRefreshSessionTwoFactorExpired(t *testing.T) {
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/2fa", http.StatusFound)
+	})
+
+	_, err := site.RefreshSession(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "两步验证") {
+		t.Fatalf("expected a two-factor error, got %v", err)
+	}
+}
+
+func TestV2EXRefreshSessionChallenge(t *testing.T) {
+	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("CF-Mitigated", "challenge")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`<html><head><title>Just a moment...</title></head></html>`))
+	})
+
+	_, err := site.RefreshSession(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Cloudflare") {
+		t.Fatalf("expected a challenge error, got %v", err)
+	}
+}
+
+func TestMergeSessionCookies(t *testing.T) {
+	merged := mergeSessionCookies(
+		`A2=old-a2; A2O=old-a2o; V2EX_LANG=zhcn; PB3_SESSION=pb`,
+		[]*http.Cookie{
+			{Name: "A2O", Value: "new-a2o"},
+			{Name: "V2EX_TAB", Value: "new-tab"},
+			{Name: "V2EX_LANG", Value: "ignored"},
+		},
+	)
+	want := `A2=old-a2; A2O=new-a2o; V2EX_LANG=zhcn; PB3_SESSION=pb; V2EX_TAB=new-tab`
+	if merged != want {
+		t.Fatalf("merged = %q, want %q", merged, want)
+	}
+}
+
 func TestV2EXSiteMissingToken(t *testing.T) {
 	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>签到页没有 once 链接</html>`))

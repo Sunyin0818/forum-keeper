@@ -18,6 +18,10 @@ v2ex:
   # V2EX_TAB 不能省：少了它领取时会被判定「浏览器设置有奇奇怪怪的地方」。
   # PB3_SESSION 由站点下发（5 天过期），填了也会被忽略。
   cookie: ''
+  # 续期文件（默认与 state.db 同目录的 v2ex_cookie）。V2EX 每次认证访问首页都会
+  # 下发新的 A2O（+30 天）和 V2EX_TAB（+14 天），程序每天续期一次并写到这里；
+  # 容器里 config 只读，所以续期结果不写回 config.yaml。
+  # cookie_file: '/data/v2ex_cookie'
   # 提醒用（API 2.0）：https://www.v2ex.com/settings/tokens
   # 留空则不轮询提醒。API Token 与网页 Cookie 是两套认证，不能互换。
   # 令牌有有效期（最长 180 天），过期后轮询报 401 Token expired，需重新创建。

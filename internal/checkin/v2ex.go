@@ -2,6 +2,7 @@ package checkin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -75,8 +77,10 @@ const (
 //	GET /mission/daily/redeem?once=<token>
 //	GET /mission/daily            -> "每日登录奖励已领取" confirms success
 type V2EXSite struct {
+	mu      sync.Mutex // guards cookie and hc.Jar against the renewal loop
 	baseURL string
 	cookie  string
+	timeout time.Duration
 	hc      *http.Client
 }
 
@@ -100,19 +104,42 @@ func NewV2EXSite(cookie, baseURL string, timeout time.Duration) *V2EXSite {
 	if baseURL == "" {
 		baseURL = DefaultBaseURLV2EX
 	}
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
 	s := &V2EXSite{
 		baseURL: trimBaseURL(baseURL),
-		cookie:  strings.TrimSpace(cookie),
+		timeout: timeout,
 		hc:      newHTTPClient(timeout),
 	}
-	if s.cookie != "" {
-		if u, err := url.Parse(s.baseURL); err == nil {
-			jar, _ := cookiejar.New(nil)
-			jar.SetCookies(u, sessionCookies(s.cookie))
-			s.hc.Jar = jar
-		}
-	}
+	s.setCookie(cookie)
 	return s
+}
+
+// SetCookie replaces the session cookie, e.g. with the renewed value the
+// previous process persisted.
+func (s *V2EXSite) SetCookie(cookie string) { s.setCookie(cookie) }
+
+// setCookie seeds a fresh jar with the given Cookie header. The jar is rebuilt
+// from scratch so a renewed A2O never coexists with the expired host-only copy
+// the old jar would still send.
+func (s *V2EXSite) setCookie(cookie string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setCookieLocked(cookie)
+}
+
+func (s *V2EXSite) setCookieLocked(cookie string) {
+	s.cookie = strings.TrimSpace(cookie)
+	s.hc.Jar = nil
+	if s.cookie == "" {
+		return
+	}
+	if u, err := url.Parse(s.baseURL); err == nil {
+		jar, _ := cookiejar.New(nil)
+		jar.SetCookies(u, sessionCookies(s.cookie))
+		s.hc.Jar = jar
+	}
 }
 
 // sessionCookies parses the configured Cookie header and drops PB3_SESSION,
@@ -423,6 +450,8 @@ func textExcerpt(page string, limit int) string {
 // returns the body, the final URL (to detect a redirect to /signin) and the
 // final status code.
 func (s *V2EXSite) get(ctx context.Context, rawURL string) (body, finalURL string, status int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	resp, err := doWithRetry(ctx, s.hc, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
@@ -457,6 +486,119 @@ func (s *V2EXSite) get(ctx context.Context, rawURL string) (body, finalURL strin
 		return "", resp.Request.URL.String(), resp.StatusCode, err
 	}
 	return string(b), resp.Request.URL.String(), resp.StatusCode, nil
+}
+
+// RefreshSession renews the sliding session cookies. V2EX answers an
+// authenticated homepage visit with fresh A2O (30 days) and V2EX_TAB (14 days)
+// values, but the daily-bonus pages do not, so a service that only opens
+// /mission/daily watches A2O die and then bounces every request to /2fa.
+//
+// The request carries the cookie explicitly instead of going through the jar:
+// renewal replaces the whole session cookie, and merging values from a jar
+// that already holds host-only copies of the same names is how duplicate A2O
+// headers appear. The merged header is returned and kept for later requests.
+func (s *V2EXSite) RefreshSession(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cookie == "" {
+		return "", fmt.Errorf("v2ex: no cookie configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", browserUA)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	req.Header.Set("Referer", s.baseURL+"/")
+	req.Header.Set("Cookie", s.cookie)
+
+	client := &http.Client{
+		Timeout: s.timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", errors.New(httpError(err))
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("v2ex: read homepage: %w", err)
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		path := loc
+		if u, perr := url.Parse(loc); perr == nil {
+			path = u.Path
+		}
+		switch {
+		case strings.HasPrefix(path, "/2fa"):
+			return "", fmt.Errorf("V2EX 会话需要重新过两步验证（A2O 已过期），请重新登录后更新 cookie")
+		case strings.HasPrefix(path, "/signin"):
+			return "", fmt.Errorf("V2EX 登录已过期，请重新登录后更新 cookie")
+		}
+		return "", fmt.Errorf("V2EX 首页重定向到 %s", path)
+	}
+	if resp.StatusCode != http.StatusOK {
+		if isChallengePage(string(body)) {
+			return "", fmt.Errorf("V2EX 被 Cloudflare 人机验证拦截（HTTP %d）", resp.StatusCode)
+		}
+		return "", fmt.Errorf("V2EX 首页返回 HTTP %d", resp.StatusCode)
+	}
+
+	merged := mergeSessionCookies(s.cookie, resp.Cookies())
+	s.setCookieLocked(merged)
+	return s.cookie, nil
+}
+
+// renewCookieNames maps the lowercase cookie names V2EX refreshes on an
+// authenticated visit to their canonical spelling. A2 is included because the
+// site sometimes renews it too; it is not part of every response.
+var renewCookieNames = map[string]string{
+	"a2":       "A2",
+	"a2o":      "A2O",
+	"v2ex_tab": "V2EX_TAB",
+}
+
+// mergeSessionCookies replaces the renewable cookies in header with the values
+// V2EX just sent, keeping every other cookie and the original order. A cookie
+// that is renewed but not already present is appended.
+func mergeSessionCookies(header string, updates []*http.Cookie) string {
+	renewed := make(map[string]string, len(updates))
+	for _, c := range updates {
+		if canonical, ok := renewCookieNames[strings.ToLower(c.Name)]; ok && c.Value != "" {
+			renewed[canonical] = c.Value
+		}
+	}
+	parts := make([]string, 0, len(updates)+4)
+	seen := make(map[string]bool, len(renewed))
+	for _, part := range strings.Split(header, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, _, ok := strings.Cut(part, "=")
+		if !ok {
+			parts = append(parts, part)
+			continue
+		}
+		if canonical, ok := renewCookieNames[strings.ToLower(strings.TrimSpace(name))]; ok {
+			if value, ok := renewed[canonical]; ok {
+				parts = append(parts, canonical+"="+value)
+				seen[canonical] = true
+				continue
+			}
+		}
+		parts = append(parts, part)
+	}
+	for _, canonical := range []string{"A2", "A2O", "V2EX_TAB"} {
+		if value, ok := renewed[canonical]; ok && !seen[canonical] {
+			parts = append(parts, canonical+"="+value)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // balancePage fetches /balance, which carries both the current coins widget and

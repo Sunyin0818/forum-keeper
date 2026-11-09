@@ -74,6 +74,11 @@ HTTP 一律用 `httptest`，端到端用 `scripts/smoke.sh` + `scripts/mockserve
   302 `/2fa`。三种原因必须分别报，不能统一写成「token 失效」或「页面结构可能已变化」。
   浏览器指纹类请求头（`Sec-Fetch-*`、`sec-ch-ua`）在 2026-11 起会被 V2EX 前置的
   Cloudflare 直接挑战，抓站点时不要再加。
+- **V2EX 会话靠首页续期**：带有效 cookie 访问 `GET /` 会下发新的 `A2O`（到期 +30 天）
+  和 `V2EX_TAB`（+14 天），签到页本身不下发。程序启动时和每 24h 续期一次，把合并后的
+  Cookie 写到 `v2ex.cookie_file`（默认 state.db 同目录的 `v2ex_cookie`，0600），启动时
+  优先读它。config.yaml 在容器里只读，只当首次种子；续期请求别走 CookieJar，否则
+  host-only 旧 cookie 会和 `Domain=.v2ex.com` 的新 cookie 同时发出。
 - 卡片投递失败不能让状态前移：签到只做一次，卡片重发不重复签到；最终没发出就不记为
   「今天已签」，重启补发。
 - 每天只签一次、只发一张卡；PT 站点各自记录状态，一个站失败不挡其他站。
@@ -92,11 +97,11 @@ HTTP 一律用 `httptest`，端到端用 `scripts/smoke.sh` + `scripts/mockserve
   `config.example.yaml` 和 README 表格。
 - 环境变量是覆盖层（`FEISHU_WEBHOOK`、`V2EX_COOKIE`、`CHECKIN_TIME`、`TZ` 等），
   用于一次性运行和 CI；文件是主来源。
-- secret 只放 `config.yaml`：gitignored、不进镜像（`.dockerignore` 已排除
-  `config.yaml`）。容器以 UID/GID 10001 只读挂载它，部署机上用
+- secret 只放 `config.yaml` 和续期落盘文件：gitignored、不进镜像（`.dockerignore` 已排除
+  `config.yaml`）。容器以 UID/GID 10001 只读挂载 config，部署机上用
   `chown root:10001 config.yaml && chmod 640 config.yaml`（0600 会让容器读不到）；
-  本地开发可 600。PT 站点可直接写 `cookie`；需要提交站点列表时改用 `cookie_env`
-  引用环境变量。
+  本地开发可 600。会话续期写到 `v2ex.cookie_file`（0600），不写状态库。PT 站点可直接写
+  `cookie`；需要提交站点列表时改用 `cookie_env` 引用环境变量。
 - 新增凭据要保证：日志、错误、卡片、状态库都不出现原值。
 
 ### 飞书卡片与隐私

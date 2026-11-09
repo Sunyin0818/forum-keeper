@@ -51,6 +51,12 @@ type Config struct {
 	Notify    NotifyConfig    `yaml:"notify"`
 	PT        PTConfig        `yaml:"pt"`
 	Server    ServerConfig    `yaml:"server"`
+
+	// SourcePath is the file Load read, empty when defaults were used. It is
+	// not a YAML key. The app compares its mtime with the renewed-cookie file
+	// so a cookie the user just pasted into config.yaml wins over a stale
+	// renewal from the previous process.
+	SourcePath string `yaml:"-"`
 }
 
 // FeishuConfig holds the bot credentials. The webhook is the credential: the
@@ -66,6 +72,11 @@ type FeishuConfig struct {
 type V2EXConfig struct {
 	// Cookie is the A2 session cookie used by the daily-bonus page.
 	Cookie string `yaml:"cookie"`
+	// CookieFile is where the sliding session cookie (A2/A2O/V2EX_TAB) is
+	// persisted after V2EX renews it. Empty means "<dir of
+	// server.state_path>/v2ex_cookie", i.e. a writable location next to the
+	// state database; the config file itself is mounted read-only.
+	CookieFile string `yaml:"cookie_file"`
 	// Token is the API 2.0 personal access token used for reminders.
 	Token string `yaml:"token"`
 	// APIBaseURL is the API 2.0 root, web_base_url the web origin. Both
@@ -177,6 +188,7 @@ func Default() Config {
 // top of it. An empty path loads the defaults only.
 func Load(path string) (*Config, error) {
 	cfg := Default()
+	cfg.SourcePath = path
 	if path != "" {
 		raw, err := os.ReadFile(path)
 		if err != nil {

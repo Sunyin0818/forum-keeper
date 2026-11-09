@@ -1037,3 +1037,86 @@ func TestRunCheckinsSplitsForumAndPTCards(t *testing.T) {
 		t.Fatalf("PT card = %+v", n.checkins[1])
 	}
 }
+
+// The V2EX session cookie slides forward on every authenticated visit. A
+// previous process may have renewed it while the config file stayed stale, so
+// the renewed file must win at startup and be rewritten after each refresh.
+func TestV2EXCookieRenewalIsRestoredAndPersisted(t *testing.T) {
+	dir := t.TempDir()
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent = append(sent, r.Header.Get("Cookie"))
+		http.SetCookie(w, &http.Cookie{Name: "A2O", Value: "renewed-a2o", Path: "/"})
+		_, _ = w.Write([]byte(`<html>home</html>`))
+	}))
+	defer srv.Close()
+
+	cfg := baseConfig()
+	cfg.V2EX.Cookie = "A2=config-a2; A2O=stale-a2o"
+	cfg.V2EX.WebBaseURL = srv.URL
+	cfg.Server.StatePath = filepath.Join(dir, "state.db")
+
+	path := filepath.Join(dir, "v2ex_cookie")
+	if err := os.WriteFile(path, []byte("A2=config-a2; A2O=stored-a2o\n"), 0o600); err != nil {
+		t.Fatalf("seed renewed cookie: %v", err)
+	}
+
+	a := NewWithDeps(cfg, nopLogger(), false, nil, nil, nil)
+	a.refreshV2EXSession(context.Background())
+
+	if len(sent) != 1 || !strings.Contains(sent[0], "A2O=stored-a2o") {
+		t.Fatalf("refresh did not use the restored cookie: %v", sent)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read renewed cookie: %v", err)
+	}
+	if !strings.Contains(string(raw), "A2O=renewed-a2o") {
+		t.Fatalf("renewed cookie not persisted: %q", raw)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat renewed cookie: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("renewed cookie perm = %o, want 600", perm)
+	}
+}
+
+// Editing config.yaml with a fresh cookie must win over a renewal file left by
+// the previous process, otherwise the user's paste would be shadowed.
+func TestV2EXCookieConfigWinsWhenNewer(t *testing.T) {
+	dir := t.TempDir()
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent = append(sent, r.Header.Get("Cookie"))
+		_, _ = w.Write([]byte(`<html>home</html>`))
+	}))
+	defer srv.Close()
+
+	cfgFile := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgFile, []byte("v2ex: {}\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg := baseConfig()
+	cfg.SourcePath = cfgFile
+	cfg.V2EX.Cookie = "A2=config-a2; A2O=new-config"
+	cfg.V2EX.WebBaseURL = srv.URL
+	cfg.Server.StatePath = filepath.Join(dir, "state.db")
+
+	path := filepath.Join(dir, "v2ex_cookie")
+	if err := os.WriteFile(path, []byte("A2=config-a2; A2O=old-file\n"), 0o600); err != nil {
+		t.Fatalf("seed renewed cookie: %v", err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(path, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatalf("age renewal file: %v", err)
+	}
+
+	a := NewWithDeps(cfg, nopLogger(), false, nil, nil, nil)
+	a.refreshV2EXSession(context.Background())
+
+	if len(sent) != 1 || !strings.Contains(sent[0], "A2O=new-config") {
+		t.Fatalf("config cookie should win after an edit: %v", sent)
+	}
+}
