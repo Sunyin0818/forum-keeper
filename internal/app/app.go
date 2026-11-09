@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -25,6 +26,10 @@ const (
 	notificationsPageSize = 20
 	alertThreshold        = 5
 	alertMinInterval      = 30 * time.Minute
+	// alertBlockedInterval spaces out Cloudflare-challenge alerts: the block
+	// can last hours but may clear, so it is retried quietly instead of
+	// hammering the group every 30 minutes.
+	alertBlockedInterval = 6 * time.Hour
 	// checkinRunTimeout bounds one scheduled run including card retries.
 	checkinRunTimeout = 10 * time.Minute
 	// v2exRefreshInterval keeps the sliding V2EX session alive: A2O slides to
@@ -94,6 +99,10 @@ type App struct {
 
 	failures  int
 	lastAlert time.Time
+	// pollStopped is set when V2EX rejects the API token. Polling is not
+	// retried after that: only editing v2ex.token and restarting can fix it,
+	// and retrying forever only produces log noise and alert cards.
+	pollStopped bool
 
 	// retryAt moves the next scheduled run to a pending site's window (V2EX
 	// opens its mission day at 08:00 UTC+8). It is only touched by the check-in
@@ -1203,11 +1212,21 @@ func (a *App) pollAndLog(ctx context.Context) {
 	if !a.RemindersEnabled() {
 		return
 	}
+	if a.pollStopped {
+		return
+	}
 	_, err := a.PollOnce(ctx)
 	if err != nil {
 		a.failures++
 		a.log.Error("poll failed", "err", err, "consecutive_failures", a.failures)
-		a.maybeAlert(ctx, err)
+		switch {
+		case errors.Is(err, v2ex.ErrUnauthorized):
+			a.stopPollingOnRejectedToken(ctx, err)
+		case errors.Is(err, v2ex.ErrBlocked):
+			a.maybeAlert(ctx, err, alertBlockedInterval)
+		default:
+			a.maybeAlert(ctx, err, alertMinInterval)
+		}
 		return
 	}
 	if a.failures > 0 {
@@ -1221,18 +1240,39 @@ func (a *App) pollAndLog(ctx context.Context) {
 	}
 }
 
-func (a *App) maybeAlert(ctx context.Context, cause error) {
+// stopPollingOnRejectedToken handles the one error that retrying cannot fix: a
+// token V2EX has rejected. The group gets one final card naming the fix, then
+// polling stops until the process restarts with a new token. Without this the
+// account receives an alert every alertMinInterval for as long as the token
+// stays broken.
+func (a *App) stopPollingOnRejectedToken(ctx context.Context, cause error) {
+	a.pollStopped = true
+	a.log.Error("polling stopped: V2EX rejected the token; update v2ex.token and restart",
+		"err", cause)
+	if !a.cfg.Notify.AlertOnError {
+		return
+	}
+	text := fmt.Sprintf("⚠️ V2EX 通知已停止\n令牌被拒绝（%s）\n不会继续重试；更新 v2ex.token 并重启后恢复",
+		feishu.RedactWebhook(truncateErr(cause, 300)))
+	a.sendAlert(ctx, text)
+}
+
+func (a *App) maybeAlert(ctx context.Context, cause error, interval time.Duration) {
 	if !a.cfg.Notify.AlertOnError || a.failures < alertThreshold {
 		return
 	}
-	if time.Since(a.lastAlert) < alertMinInterval {
+	if time.Since(a.lastAlert) < interval {
 		return
 	}
+	text := fmt.Sprintf("⚠️ V2EX 通知服务异常\n连续失败 %d 次\n最近错误: %s",
+		a.failures, feishu.RedactWebhook(truncateErr(cause, 300)))
+	a.sendAlert(ctx, text)
+}
+
+// sendAlert records the attempt and delivers one card. The alert must still go
+// out even if the parent context is cancelled.
+func (a *App) sendAlert(ctx context.Context, text string) {
 	a.lastAlert = time.Now()
-
-	text := fmt.Sprintf("⚠️ V2EX 通知服务异常\n连续失败 %d 次\n最近错误: %s", a.failures, feishu.RedactWebhook(truncateErr(cause, 300)))
-
-	// The alert must still go out even if the parent context is cancelled.
 	alertCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 	if err := a.bot.Alert(alertCtx, text); err != nil {

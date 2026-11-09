@@ -84,7 +84,9 @@ func TestV2EXSiteExpiredCookie(t *testing.T) {
 }
 
 func TestV2EXSiteTwoFactorExpired(t *testing.T) {
+	requests := 0
 	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		if r.URL.Path == "/mission/daily" {
 			http.Redirect(w, r, "/2fa", http.StatusFound)
 			return
@@ -99,10 +101,15 @@ func TestV2EXSiteTwoFactorExpired(t *testing.T) {
 	if !strings.Contains(res.Detail, "两步验证") || !strings.Contains(res.Detail, "A2O") {
 		t.Fatalf("detail should name the expired second factor: %q", res.Detail)
 	}
+	if requests != 2 { // the mission page plus its /2fa redirect, no claim retries
+		t.Fatalf("a credential failure must not be retried: %d requests", requests)
+	}
 }
 
 func TestV2EXSiteCloudflareChallenge(t *testing.T) {
+	requests := 0
 	site, _ := newV2EXTestSite(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		w.Header().Set("CF-Mitigated", "challenge")
 		w.WriteHeader(http.StatusForbidden)
 		w.Write([]byte(`<html><head><title>Just a moment...</title></head></html>`))
@@ -117,6 +124,9 @@ func TestV2EXSiteCloudflareChallenge(t *testing.T) {
 	}
 	if strings.Contains(res.Detail, "页面结构") {
 		t.Fatalf("a challenge is not a markup change: %q", res.Detail)
+	}
+	if requests != 1 {
+		t.Fatalf("a challenge must not be retried: %d requests", requests)
 	}
 }
 

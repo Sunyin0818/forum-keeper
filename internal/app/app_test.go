@@ -1120,3 +1120,50 @@ func TestV2EXCookieConfigWinsWhenNewer(t *testing.T) {
 		t.Fatalf("config cookie should win after an edit: %v", sent)
 	}
 }
+
+// A rejected API token cannot heal by retrying. One card names the fix, then
+// polling stops: otherwise the group gets an alert every 30 minutes forever.
+func TestRejectedTokenStopsPollingAfterOneAlert(t *testing.T) {
+	f := &fakeFetcher{err: fmt.Errorf("%w: HTTP 401", v2ex.ErrUnauthorized)}
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, f, newFakeState(), n)
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		a.pollAndLog(ctx)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("polling continued after a rejected token: %d calls", len(f.calls))
+	}
+	if len(n.alerts) != 1 {
+		t.Fatalf("expected exactly 1 alert, got %d (%v)", len(n.alerts), n.alerts)
+	}
+	if !strings.Contains(n.alerts[0], "v2ex.token") {
+		t.Fatalf("alert must name the fix: %q", n.alerts[0])
+	}
+}
+
+// A Cloudflare block may clear on its own, so polling continues, but the group
+// is only told every alertBlockedInterval instead of every 30 minutes.
+func TestBlockedAlertsAreBackedOff(t *testing.T) {
+	f := &fakeFetcher{err: fmt.Errorf("%w: HTTP 403", v2ex.ErrBlocked)}
+	n := &fakeNotifier{}
+	a := NewWithDeps(baseConfig(), nopLogger(), false, f, newFakeState(), n)
+	ctx := context.Background()
+
+	for i := 0; i < alertThreshold+2; i++ {
+		a.pollAndLog(ctx)
+	}
+	if len(n.alerts) != 1 {
+		t.Fatalf("expected 1 alert inside the backoff window, got %d", len(n.alerts))
+	}
+	if len(f.calls) != alertThreshold+2 {
+		t.Fatalf("a block must keep retrying quietly, calls=%d", len(f.calls))
+	}
+
+	a.lastAlert = time.Now().Add(-alertBlockedInterval - time.Minute)
+	a.pollAndLog(ctx)
+	if len(n.alerts) != 2 {
+		t.Fatalf("expected a second alert after the backoff, got %d", len(n.alerts))
+	}
+}

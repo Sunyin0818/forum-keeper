@@ -79,6 +79,10 @@ HTTP 一律用 `httptest`，端到端用 `scripts/smoke.sh` + `scripts/mockserve
   Cookie 写到 `v2ex.cookie_file`（默认 state.db 同目录的 `v2ex_cookie`，0600），启动时
   优先读它。config.yaml 在容器里只读，只当首次种子；续期请求别走 CookieJar，否则
   host-only 旧 cookie 会和 `Domain=.v2ex.com` 的新 cookie 同时发出。
+- **不可恢复的错误不重试**：V2EX 拒绝 token（`ErrUnauthorized`）时只推一张「通知已
+  停止」卡并结束轮询，改 token 重启才恢复；Cloudflare 挑战（`ErrBlocked`）静默重试，
+  提醒间隔至少 6 小时；签到的 cookie/2FA/人机验证失败只报一次，不进入 `pending`
+  重试（重试也只会得到同样的 403/302）。
 - 卡片投递失败不能让状态前移：签到只做一次，卡片重发不重复签到；最终没发出就不记为
   「今天已签」，重启补发。
 - 每天只签一次、只发一张卡；PT 站点各自记录状态，一个站失败不挡其他站。
