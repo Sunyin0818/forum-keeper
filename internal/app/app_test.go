@@ -17,6 +17,7 @@ import (
 	"github.com/Sunyin0818/forum-keeper/internal/checkin"
 	"github.com/Sunyin0818/forum-keeper/internal/config"
 	"github.com/Sunyin0818/forum-keeper/internal/feishu"
+	"github.com/Sunyin0818/forum-keeper/internal/libra"
 	"github.com/Sunyin0818/forum-keeper/internal/ptsite"
 	"github.com/Sunyin0818/forum-keeper/internal/store"
 	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
@@ -119,6 +120,7 @@ type fakeNotifier struct {
 	checkins     [][]feishu.CheckinEntry
 	groups       []string
 	siteMessages [][]feishu.SiteMessage
+	libraBatches [][]libra.Notification
 	err          error
 
 	// checkinCalls counts every Checkin attempt, including rejected ones.
@@ -174,6 +176,14 @@ func (n *fakeNotifier) SiteMessages(_ context.Context, messages []feishu.SiteMes
 		return n.err
 	}
 	n.siteMessages = append(n.siteMessages, messages)
+	return nil
+}
+
+func (n *fakeNotifier) LibraNotify(_ context.Context, items []libra.Notification, _ string) error {
+	if n.err != nil {
+		return n.err
+	}
+	n.libraBatches = append(n.libraBatches, items)
 	return nil
 }
 

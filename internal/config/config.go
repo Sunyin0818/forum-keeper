@@ -9,12 +9,14 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Sunyin0818/forum-keeper/internal/libra"
 	"github.com/Sunyin0818/forum-keeper/internal/ptsite"
 )
 
@@ -30,6 +32,10 @@ const (
 	DefaultV2EXWebBaseURL = "https://www.v2ex.com"
 	// 2libra forum origin, used by the check-in POST /api/sign.
 	DefaultLibraBaseURL = "https://2libra.com"
+	// DefaultLibraScopes covers the reminders (profile + read:me). The
+	// check-in scopes read:economy / write:economy are intentionally not
+	// requested until the check-in actually moves to the v1 endpoint.
+	DefaultLibraScopes = "profile read:me"
 
 	// DefaultDailyCheckinTime is the local time of the daily check-in run. It sits
 	// after 08:00 UTC+8 on purpose: V2EX opens its mission day at 08:00, so an
@@ -85,11 +91,25 @@ type V2EXConfig struct {
 	WebBaseURL string `yaml:"web_base_url"`
 }
 
-// LibraConfig holds the 2libra credential: a cookie or a bare bearer token.
+// LibraConfig holds the 2libra credentials. Cookie drives the legacy
+// cookie-based check-in; the OAuth fields drive the v1 reminders.
 type LibraConfig struct {
 	Cookie string `yaml:"cookie"`
 	// BaseURL is the 2libra origin.
 	BaseURL string `yaml:"base_url"`
+	// ClientID / ClientSecret / RedirectURI are the OAuth application
+	// credentials. All three are required together for reminders.
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	RedirectURI  string `yaml:"redirect_uri"`
+	// TokenFile is where the OAuth token pair is persisted. Empty means
+	// "<dir of server.state_path>/libra_token.json".
+	TokenFile string `yaml:"token_file"`
+	// Scopes is the space-separated scope list requested by --libra-auth.
+	Scopes string `yaml:"scopes"`
+	// FilterTypes limits which notification types are pushed. Empty pushes
+	// every type.
+	FilterTypes []string `yaml:"filter_types"`
 }
 
 // CheckinConfig controls the daily check-in schedule.
@@ -154,6 +174,7 @@ func Default() Config {
 		},
 		Libra: LibraConfig{
 			BaseURL: DefaultLibraBaseURL,
+			Scopes:  DefaultLibraScopes,
 		},
 		Checkin: CheckinConfig{
 			Time:     DefaultDailyCheckinTime,
@@ -226,6 +247,21 @@ func (c *Config) applyEnvOverrides() error {
 	}
 	if v := envStr("LIBRA_COOKIE", ""); v != "" {
 		c.Libra.Cookie = v
+	}
+	if v := envStr("LIBRA_CLIENT_ID", ""); v != "" {
+		c.Libra.ClientID = v
+	}
+	if v := envStr("LIBRA_CLIENT_SECRET", ""); v != "" {
+		c.Libra.ClientSecret = v
+	}
+	if v := envStr("LIBRA_REDIRECT_URI", ""); v != "" {
+		c.Libra.RedirectURI = v
+	}
+	if v := envStr("LIBRA_TOKEN_FILE", ""); v != "" {
+		c.Libra.TokenFile = v
+	}
+	if v := envStr("LIBRA_SCOPES", ""); v != "" {
+		c.Libra.Scopes = v
 	}
 	if v := envStr("V2EX_API_BASE_URL", ""); v != "" {
 		c.V2EX.APIBaseURL = v
@@ -309,8 +345,21 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: feishu.webhook is required")
 	}
 	// Without any credential the service would sit there doing nothing.
-	if c.V2EX.Token == "" && c.V2EX.Cookie == "" && c.Libra.Cookie == "" && len(c.PT.Sites) == 0 {
-		return fmt.Errorf("config: nothing to do: set v2ex.token (reminders), v2ex.cookie/libra.cookie (check-in), or pt.sites")
+	if c.V2EX.Token == "" && c.V2EX.Cookie == "" && c.Libra.Cookie == "" && c.Libra.ClientID == "" && len(c.PT.Sites) == 0 {
+		return fmt.Errorf("config: nothing to do: set v2ex.token (reminders), v2ex.cookie/libra.cookie (check-in), libra.client_id (2libra reminders), or pt.sites")
+	}
+	if c.Libra.ClientID != "" || c.Libra.ClientSecret != "" || c.Libra.RedirectURI != "" {
+		if c.Libra.ClientID == "" || c.Libra.ClientSecret == "" || c.Libra.RedirectURI == "" {
+			return fmt.Errorf("config: libra.client_id, libra.client_secret and libra.redirect_uri must be set together")
+		}
+		if strings.TrimSpace(c.Libra.Scopes) == "" {
+			return fmt.Errorf("config: libra.scopes must not be empty")
+		}
+	}
+	for _, t := range c.Libra.FilterTypes {
+		if !libra.KnownNotificationType(strings.ToLower(t)) {
+			return fmt.Errorf("config: libra.filter_types contains unknown type %q", t)
+		}
 	}
 	if _, _, err := parseClock(c.Checkin.Time); err != nil {
 		return err
@@ -369,6 +418,15 @@ func (c *Config) CheckinClock() (int, int, error) {
 // Location returns the timezone the schedule runs in.
 func (c *Config) Location() (*time.Location, error) {
 	return time.LoadLocation(c.Checkin.Timezone)
+}
+
+// LibraTokenFile is the persisted OAuth token pair. It lives next to the state
+// database by default: the config directory is read-only in the container.
+func (c *Config) LibraTokenFile() string {
+	if path := strings.TrimSpace(c.Libra.TokenFile); path != "" {
+		return path
+	}
+	return filepath.Join(filepath.Dir(c.Server.StatePath), "libra_token.json")
 }
 
 // parseClock parses "HH:MM" into hour and minute.

@@ -325,3 +325,48 @@ func TestPendingCheckinCard(t *testing.T) {
 		t.Fatalf("after clear found=%v err=%v", found, err)
 	}
 }
+
+func TestLibraSeenDedupeAndFirstRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	done, err := s.LibraFirstRunDone()
+	if err != nil || done {
+		t.Fatalf("first run done = %v, %v; want false", done, err)
+	}
+	if err := s.SetLibraFirstRunDone(); err != nil {
+		t.Fatalf("SetLibraFirstRunDone: %v", err)
+	}
+	if done, err = s.LibraFirstRunDone(); err != nil || !done {
+		t.Fatalf("first run done = %v, %v; want true", done, err)
+	}
+
+	got, err := s.FilterNewLibra([]string{"n1", "n2"})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("FilterNewLibra = %v, %v", got, err)
+	}
+	if err := s.MarkLibra([]string{"n1"}); err != nil {
+		t.Fatalf("MarkLibra: %v", err)
+	}
+	got, err = s.FilterNewLibra([]string{"n1", "n2", "n3"})
+	if err != nil {
+		t.Fatalf("FilterNewLibra: %v", err)
+	}
+	if len(got) != 2 || got[0] != "n2" || got[1] != "n3" {
+		t.Fatalf("new ids = %v, want [n2 n3]", got)
+	}
+	if n, err := s.LibraCount(); err != nil || n != 1 {
+		t.Fatalf("LibraCount = %d, %v; want 1", n, err)
+	}
+
+	if err := s.PruneLibraSeen(time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PruneLibraSeen: %v", err)
+	}
+	if n, err := s.LibraCount(); err != nil || n != 0 {
+		t.Fatalf("LibraCount after prune = %d, %v; want 0", n, err)
+	}
+}

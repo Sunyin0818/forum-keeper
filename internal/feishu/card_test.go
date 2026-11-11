@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sunyin0818/forum-keeper/internal/libra"
 	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
@@ -408,5 +409,93 @@ func TestBuildCardRendersNotificationAsPlainText(t *testing.T) {
 	}
 	if el.Text.Tag != "plain_text" {
 		t.Fatalf("notification body is %q, want plain_text", el.Text.Tag)
+	}
+}
+
+func TestBuildLibraCard(t *testing.T) {
+	level := 1
+	items := []libra.Notification{
+		{
+			ID:        "n1",
+			Type:      "reply",
+			CreatedAt: "2026-11-11T10:00:00.000Z",
+			FromUser:  &libra.User{Username: "bob"},
+			Payload: libra.NotificationPayload{
+				PostTitle:    "关于签到",
+				PostShortID:  "a1b2c3d4",
+				PostNodeSlug: "work",
+				CommentID:    "c1",
+				CommentText:  "你试过新的接口吗？",
+				CommentLevel: &level,
+			},
+		},
+		{
+			ID:       "n2",
+			Type:     "get_reward",
+			FromUser: &libra.User{Username: "carol"},
+			Payload: libra.NotificationPayload{
+				PostTitle:  "帖子标题",
+				RewardType: "POST",
+				Amount:     20,
+			},
+		},
+	}
+	card := BuildLibraCard(items, "https://2libra.com", time.Now())
+	body, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		"2libra", "回复", "@bob 回复了你的评论", "关于签到", "你试过新的接口吗？",
+		"打赏了你的帖子（+20 金币）", "https://2libra.com/post/work/a1b2c3d4?commentId=c1",
+		`"tag":"plain_text"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("card missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(string(body), "lark_md") {
+		t.Errorf("2libra card must not use lark_md:\n%s", body)
+	}
+}
+
+func TestBuildLibraCardCapsItems(t *testing.T) {
+	items := make([]libra.Notification, 12)
+	for i := range items {
+		items[i] = libra.Notification{ID: "id", Type: "system"}
+	}
+	card := BuildLibraCard(items, "https://2libra.com", time.Now())
+	body, _ := json.Marshal(card)
+	if !strings.Contains(string(body), "还有 2 条未显示") {
+		t.Errorf("missing truncation note:\n%s", body)
+	}
+}
+
+func TestBuildLibraCardSystemAndPandora(t *testing.T) {
+	items := []libra.Notification{
+		{
+			ID:       "s1",
+			Type:     "system",
+			FromUser: &libra.User{Username: "系统助手"},
+			Payload: libra.NotificationPayload{
+				ClientName: "维护助手",
+				Message:    "今晚 23:00 维护",
+				PostTitle:  "公告",
+			},
+		},
+		{
+			ID:   "p1",
+			Type: "pandora",
+			Payload: libra.NotificationPayload{
+				EventTitle: "头像翻转",
+				Message:    "持续 24 小时",
+			},
+		},
+	}
+	body, _ := json.Marshal(BuildLibraCard(items, "https://2libra.com", time.Now()))
+	for _, want := range []string{"@系统助手 系统消息", "公告", "今晚 23:00 维护", "潘多拉", "头像翻转", "持续 24 小时"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("card missing %q:\n%s", want, body)
+		}
 	}
 }

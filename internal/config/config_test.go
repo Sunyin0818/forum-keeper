@@ -319,3 +319,58 @@ checkin:
 		t.Fatalf("Asia/Tokyo offset = %s, want 21:00", got)
 	}
 }
+
+func TestLibraOAuthConfig(t *testing.T) {
+	path := writeConfig(t, `
+feishu:
+  webhook: 'https://example.invalid/hook'
+libra:
+  client_id: cid
+  client_secret: secret
+  redirect_uri: 'http://127.0.0.1:8973/callback'
+  scopes: 'profile read:me'
+  filter_types: [reply, mention]
+server:
+  state_path: /data/state.db
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Libra.ClientID != "cid" || cfg.Libra.ClientSecret != "secret" {
+		t.Errorf("libra credentials = %+v", cfg.Libra)
+	}
+	if len(cfg.Libra.FilterTypes) != 2 {
+		t.Errorf("libra.filter_types = %v", cfg.Libra.FilterTypes)
+	}
+	if got, want := cfg.LibraTokenFile(), "/data/libra_token.json"; got != want {
+		t.Errorf("LibraTokenFile = %q, want %q", got, want)
+	}
+}
+
+func TestLibraOAuthPartialConfigRejected(t *testing.T) {
+	path := writeConfig(t, `
+feishu:
+  webhook: 'https://example.invalid/hook'
+libra:
+  client_id: cid
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected an error when only client_id is set")
+	}
+}
+
+func TestLibraUnknownFilterTypeRejected(t *testing.T) {
+	path := writeConfig(t, `
+feishu:
+  webhook: 'https://example.invalid/hook'
+libra:
+  client_id: cid
+  client_secret: secret
+  redirect_uri: 'http://127.0.0.1:8973/callback'
+  filter_types: [nope]
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected an unknown filter type to be rejected")
+	}
+}

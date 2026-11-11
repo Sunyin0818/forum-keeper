@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sunyin0818/forum-keeper/internal/libra"
 	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
@@ -55,6 +56,11 @@ func (b *Bot) Checkin(ctx context.Context, entries []CheckinEntry) error {
 // CheckinGroup reports one check-in group (forums or PT) as its own card.
 func (b *Bot) CheckinGroup(ctx context.Context, group string, entries []CheckinEntry) error {
 	return b.client.SendCard(ctx, BuildCheckinCardFor(entries, time.Now(), group))
+}
+
+// LibraNotify pushes new 2libra notifications as one aggregated card.
+func (b *Bot) LibraNotify(ctx context.Context, items []libra.Notification, webBase string) error {
+	return b.client.SendCard(ctx, BuildLibraCard(items, webBase, time.Now()))
 }
 
 // SiteMessages reports new tracker inbox messages.

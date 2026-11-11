@@ -8,6 +8,7 @@
 cmd/forum-keeper/   入口与命令行参数
 internal/config/    config.yaml 解析、默认值与环境变量覆盖
 internal/v2ex/      V2EX API 2.0 客户端（提醒）
+internal/libra/     2libra v1 客户端（OAuth、令牌刷新、通知）
 internal/checkin/   签到（V2EX / 2libra）+ 调度
 internal/ptsite/    PT 通用签到 / NexusPHP 站内信 / 去重与重试 + 内置预设
 internal/feishu/    飞书 webhook 与卡片渲染
@@ -39,7 +40,7 @@ CONFIG_FILE=config.yaml go run ./cmd/forum-keeper --once --dry-run
 ```
 
 命令行参数（`--once`、`--checkin`、`--pt-messages`、`--check-config`、`--dry-run`、
-`--notify-startup`、`--version`）见 README「命令」。
+`--notify-startup`、`--libra-auth`、`--version`）见 README「命令」。
 
 ## 提交前验证
 
@@ -63,6 +64,8 @@ HTTP 一律用 `httptest`，端到端用 `scripts/smoke.sh` + `scripts/mockserve
 - **不依赖 GitHub Actions 运行时**。Actions 只负责测试、构建镜像和发布。
 - PT 功能默认关闭：`pt.sites` 为空即关闭。
 - 凭据存在即启用对应功能；不要新增「空值也算启用」的隐式开关。
+- 2libra 提醒与签到是两条独立路径：提醒用 OAuth v1，签到仍是旧的 cookie 接口。
+  不要把 `write:economy` 加进默认 scope；提醒只需要 `profile read:me`。
 
 ### 签到与状态
 
@@ -87,7 +90,7 @@ HTTP 一律用 `httptest`，端到端用 `scripts/smoke.sh` + `scripts/mockserve
   「今天已签」，重启补发。
 - 每天只签一次、只发一张卡；PT 站点各自记录状态，一个站失败不挡其他站。
 - 状态库是 bbolt（`server.state_path`，默认 `state.db`，0600）。`seen` / `pt_checkin` /
-  `pt_seen` / `pt_pending` / `pt_card` 各桶的语义由 `internal/store` 集中管理。
+  `pt_seen` / `pt_pending` / `pt_card` / `libra_seen` 各桶的语义由 `internal/store` 集中管理。
   丢状态只会导致重推/重试，不应影响凭据。
 - 配置目录只读、状态目录可写：容器里 `/config` 是 `:ro`，持久状态只写 `/data`
   （根文件系统只读，`/tmp` 是 tmpfs）。
@@ -96,6 +99,11 @@ HTTP 一律用 `httptest`，端到端用 `scripts/smoke.sh` + `scripts/mockserve
 
 - 配置只有一份 `config.yaml`，结构按模块分组：`feishu` / `v2ex` / `libra` / `checkin` /
   `reminders` / `notify` / `pt` / `server`。字段名就是 YAML 键。
+- 2libra 提醒走官方 OAuth：`libra.client_id` / `client_secret` / `redirect_uri` 三项同时存在
+  才启用；令牌由 `--libra-auth` 写入 `libra.token_file`（默认与 `state.db` 同目录的
+  `libra_token.json`，0600），进程内单飞刷新。访问令牌 1 小时、刷新令牌滑动 30 天、
+  绝对上限 90 天，到期或 `401` / `403 insufficient_scope` 只推一张卡片并停止轮询，
+  与 V2EX 令牌失效的处理一致。
 - YAML 解析用 `yaml.Decoder` + `KnownFields(true)`：**拼错的键直接报错**，不静默忽略。
 - 只写要改的项，其余走 `config.Default()` 的默认值。新增配置项要同时更新
   `config.example.yaml` 和 README 表格。
@@ -106,7 +114,8 @@ HTTP 一律用 `httptest`，端到端用 `scripts/smoke.sh` + `scripts/mockserve
   `chown root:10001 config.yaml && chmod 640 config.yaml`（0600 会让容器读不到）；
   本地开发可 600。会话续期写到 `v2ex.cookie_file`（0600），不写状态库。PT 站点可直接写
   `cookie`；需要提交站点列表时改用 `cookie_env` 引用环境变量。
-- 新增凭据要保证：日志、错误、卡片、状态库都不出现原值。
+- 新增凭据要保证：日志、错误、卡片、状态库都不出现原值。OAuth 令牌只写
+  `libra.token_file`；`--libra-auth` 的终端输出只回显用户名与 scope，不打印令牌。
 
 ### 飞书卡片与隐私
 

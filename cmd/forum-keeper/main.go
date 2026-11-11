@@ -30,6 +30,7 @@ func main() {
 		checkConfig   = flag.Bool("check-config", false, "validate configuration and print the resolved sites, then exit")
 		dryRun        = flag.Bool("dry-run", false, "log what would be pushed without sending or mutating state")
 		notifyStartup = flag.Bool("notify-startup", false, "send the startup message and exit (webhook smoke test)")
+		libraAuth     = flag.Bool("libra-auth", false, "authorize 2libra OAuth once, store the token, then exit")
 		showVersion   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -56,6 +57,14 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *libraAuth {
+		if err := runLibraAuth(ctx, cfg, logger); err != nil {
+			logger.Error("2libra authorization failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	service, err := app.New(cfg, logger, *dryRun)
 	if err != nil {
@@ -99,13 +108,23 @@ func main() {
 	}
 
 	if *once {
-		if !service.RemindersEnabled() {
-			logger.Info("V2EX_TOKEN is empty; nothing to poll")
-			return
+		polled := false
+		if service.RemindersEnabled() {
+			polled = true
+			if _, err := service.PollOnce(ctx); err != nil {
+				logger.Error("V2EX poll failed", "err", err)
+				os.Exit(1)
+			}
 		}
-		if _, err := service.PollOnce(ctx); err != nil {
-			logger.Error("poll failed", "err", err)
-			os.Exit(1)
+		if service.LibraRemindersEnabled() {
+			polled = true
+			if _, err := service.PollLibraOnce(ctx); err != nil {
+				logger.Error("2libra poll failed", "err", err)
+				os.Exit(1)
+			}
+		}
+		if !polled {
+			logger.Info("no reminder source is configured; nothing to poll")
 		}
 		return
 	}

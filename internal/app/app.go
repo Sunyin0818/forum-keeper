@@ -16,6 +16,7 @@ import (
 	"github.com/Sunyin0818/forum-keeper/internal/checkin"
 	"github.com/Sunyin0818/forum-keeper/internal/config"
 	"github.com/Sunyin0818/forum-keeper/internal/feishu"
+	"github.com/Sunyin0818/forum-keeper/internal/libra"
 	"github.com/Sunyin0818/forum-keeper/internal/ptsite"
 	"github.com/Sunyin0818/forum-keeper/internal/store"
 	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
@@ -80,6 +81,7 @@ type Notifier interface {
 	Checkin(ctx context.Context, entries []feishu.CheckinEntry) error
 	CheckinGroup(ctx context.Context, group string, entries []feishu.CheckinEntry) error
 	SiteMessages(ctx context.Context, messages []feishu.SiteMessage) error
+	LibraNotify(ctx context.Context, items []libra.Notification, webBase string) error
 }
 
 // rateLimiter is implemented by the real client; used only for logging.
@@ -115,6 +117,12 @@ type App struct {
 
 	ptRunner       *ptsite.Runner
 	ptPollInterval time.Duration
+
+	// libra is nil until an OAuth client is configured. libraStopped is set
+	// when the token or scope is terminal: only a new authorization fixes it.
+	libra         *libra.Client
+	libraStopped  bool
+	libraFailures int
 }
 
 // New builds an App from configuration, opening the state database and HTTP
@@ -133,6 +141,11 @@ func New(cfg *config.Config, logger *slog.Logger, dryRun bool) (*App, error) {
 			logger.Warn("prune PT message state", "err", err)
 		}
 	}
+	if pruner, ok := st.(interface{ PruneLibraSeen(time.Time) error }); ok {
+		if err := pruner.PruneLibraSeen(time.Now().Add(-90 * 24 * time.Hour)); err != nil {
+			logger.Warn("prune 2libra notification state", "err", err)
+		}
+	}
 	ptSites, err := loadPTSites(cfg, logger, dryRun)
 	if err != nil {
 		if closer, ok := st.(interface{ Close() error }); ok {
@@ -145,7 +158,39 @@ func New(cfg *config.Config, logger *slog.Logger, dryRun bool) (*App, error) {
 	if len(ptSites) > 0 {
 		a.SetPTSites(ptSites)
 	}
+	if cfg.Libra.ClientID != "" {
+		lc, err := libra.New(libra.Config{
+			BaseURL:      cfg.Libra.BaseURL,
+			ClientID:     cfg.Libra.ClientID,
+			ClientSecret: cfg.Libra.ClientSecret,
+			RedirectURI:  cfg.Libra.RedirectURI,
+			TokenFile:    cfg.LibraTokenFile(),
+			Scopes:       cfg.Libra.Scopes,
+			Timeout:      cfg.Server.HTTPTimeout,
+		})
+		if err != nil {
+			// A missing or corrupt token is fixable with --libra-auth; it must
+			// not stop the check-in or V2EX reminders.
+			logger.Warn("2libra reminders disabled", "err", err)
+		} else {
+			a.SetLibraClient(lc)
+		}
+	}
 	return a, nil
+}
+
+// SetLibraClient attaches the OAuth client (used by New and tests).
+func (a *App) SetLibraClient(c *libra.Client) {
+	a.libra = c
+}
+
+// LibraConfigured reports whether OAuth credentials are present, regardless of
+// whether a token has been obtained yet.
+func (a *App) LibraConfigured() bool { return a.cfg.Libra.ClientID != "" }
+
+// LibraRemindersEnabled reports whether the 2libra reminder loop can run.
+func (a *App) LibraRemindersEnabled() bool {
+	return a.libra != nil && a.libra.Authorized()
 }
 
 // loadPTSites builds one client per configured tracker. A malformed site is a
@@ -360,6 +405,14 @@ func (a *App) CheckConfig() error {
 	for _, site := range a.sites {
 		a.log.Info("check-in site", "name", site.Name())
 	}
+	switch {
+	case a.LibraRemindersEnabled():
+		a.log.Info("2libra reminders", "status", "authorized")
+	case a.LibraConfigured():
+		a.log.Info("2libra reminders", "status", "configured, no token (run --libra-auth)")
+	default:
+		a.log.Info("2libra reminders", "status", "disabled")
+	}
 	if a.ptRunner == nil {
 		a.log.Info("PT sites: disabled (pt.sites is empty)")
 		return nil
@@ -448,6 +501,11 @@ func (a *App) startupLines() []string {
 	lines = append(lines, "每日签到: "+a.checkinLabel())
 	if a.ptRunner != nil {
 		lines = append(lines, fmt.Sprintf("PT 站点: %d 个 · 消息轮询 %s", len(a.ptRunner.Sites()), a.ptPollInterval))
+	}
+	if a.LibraRemindersEnabled() {
+		lines = append(lines, "2libra 提醒: 已授权")
+	} else if a.LibraConfigured() {
+		lines = append(lines, "2libra 提醒: 未授权（运行 --libra-auth）")
 	}
 	if a.RemindersEnabled() {
 		lines = append(lines,
@@ -540,9 +598,16 @@ func (a *App) Run(ctx context.Context) error {
 	if a.ptMessageEnabled() {
 		go a.ptMessageLoop(ctx)
 	}
+	if a.LibraRemindersEnabled() {
+		go a.libraPollLoop(ctx)
+	} else if a.LibraConfigured() {
+		a.log.Warn("2libra OAuth is configured but no token is stored; run --libra-auth")
+	}
 
 	if !a.RemindersEnabled() {
-		a.log.Info("V2EX reminders disabled (V2EX_TOKEN is empty); running check-in only")
+		if !a.LibraRemindersEnabled() {
+			a.log.Info("V2EX and 2libra reminders disabled; running check-in only")
+		}
 		<-ctx.Done()
 		a.log.Info("shutting down")
 		return ctx.Err()
@@ -1206,6 +1271,239 @@ func (a *App) passFilter(it v2ex.Notification) bool {
 		}
 	}
 	return false
+}
+
+// libraState is the optional dedupe surface for 2libra notifications. It is
+// separate from State so existing test fakes keep compiling.
+type libraState interface {
+	FilterNewLibra(ids []string) ([]string, error)
+	MarkLibra(ids []string) error
+	LibraFirstRunDone() (bool, error)
+	SetLibraFirstRunDone() error
+}
+
+// libraPageSize is the maximum limit accepted by /v1/me/notifications.
+const libraPageSize = 50
+
+// PollLibraOnce fetches the newest notification pages, pushes the unseen ones
+// and marks them only after the card was accepted. It mirrors PollOnce's
+// first-run and dedupe rules.
+func (a *App) PollLibraOnce(ctx context.Context) (int, error) {
+	if a.libra == nil {
+		return 0, errors.New("2libra reminders are not configured")
+	}
+	st, ok := a.state.(libraState)
+	if !ok {
+		return 0, errors.New("state store does not support 2libra notifications")
+	}
+
+	items, err := a.fetchLibra(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if len(items) == 0 {
+		a.log.Debug("no 2libra notifications returned")
+		if !a.dryRun {
+			if done, _ := st.LibraFirstRunDone(); !done {
+				_ = st.SetLibraFirstRunDone()
+			}
+		}
+		return 0, nil
+	}
+
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.ID)
+	}
+	newIDs, err := st.FilterNewLibra(ids)
+	if err != nil {
+		return 0, err
+	}
+	if len(newIDs) == 0 {
+		a.log.Debug("no new 2libra notifications", "fetched", len(items))
+		return 0, nil
+	}
+
+	firstRunDone, err := st.LibraFirstRunDone()
+	if err != nil {
+		return 0, err
+	}
+	if !firstRunDone && a.cfg.Reminders.FirstRun == config.FirstRunSkip {
+		if a.dryRun {
+			a.log.Info("dry-run: first 2libra run would record existing notifications without pushing", "count", len(ids))
+			for _, it := range items {
+				a.log.Info("dry-run: would record (not push)",
+					"id", it.ID, "type", it.Type, "actor", it.Actor())
+			}
+			return 0, nil
+		}
+		a.log.Info("first 2libra run: recording existing notifications without pushing", "count", len(ids))
+		if err := st.MarkLibra(ids); err != nil {
+			return 0, err
+		}
+		if err := st.SetLibraFirstRunDone(); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+
+	// Only unseen notifications can be pushed; the filter is applied after
+	// that so filtering one kind does not keep it "new" forever.
+	isNew := make(map[string]struct{}, len(newIDs))
+	for _, id := range newIDs {
+		isNew[id] = struct{}{}
+	}
+	fresh := make([]libra.Notification, 0, len(newIDs))
+	for _, it := range items {
+		if _, ok := isNew[it.ID]; !ok {
+			continue
+		}
+		if !a.passLibraFilter(it) {
+			continue
+		}
+		fresh = append(fresh, it)
+	}
+
+	if a.dryRun {
+		for _, it := range fresh {
+			a.log.Info("dry-run: would push 2libra notification",
+				"id", it.ID, "type", it.Type, "actor", it.Actor(), "title", it.Payload.PostTitle)
+		}
+		if len(fresh) == 0 {
+			a.log.Info("dry-run: filtered out all new 2libra notifications", "new", len(newIDs))
+		}
+		return len(fresh), nil
+	}
+
+	if len(fresh) == 0 {
+		if err := st.MarkLibra(newIDs); err != nil {
+			return 0, err
+		}
+		if !firstRunDone {
+			if err := st.SetLibraFirstRunDone(); err != nil {
+				return 0, err
+			}
+		}
+		return 0, nil
+	}
+
+	if err := a.bot.LibraNotify(ctx, fresh, a.libra.WebBase()); err != nil {
+		return 0, fmt.Errorf("push 2libra notifications: %w", err)
+	}
+	a.log.Info("pushed 2libra notifications", "count", len(fresh))
+
+	if err := st.MarkLibra(newIDs); err != nil {
+		return len(fresh), err
+	}
+	if !firstRunDone {
+		if err := st.SetLibraFirstRunDone(); err != nil {
+			return len(fresh), err
+		}
+	}
+	return len(fresh), nil
+}
+
+// fetchLibra walks the newest pages until one is short or the page budget is
+// exhausted, de-duplicating by the notification uuid.
+func (a *App) fetchLibra(ctx context.Context) ([]libra.Notification, error) {
+	maxPages := a.cfg.Reminders.MaxPages
+	if maxPages < 1 {
+		maxPages = 1
+	}
+	var all []libra.Notification
+	seen := make(map[string]struct{})
+	for page := 1; page <= maxPages; page++ {
+		res, err := a.libra.Notifications(ctx, page, libraPageSize)
+		if err != nil {
+			return nil, err
+		}
+		if len(res.List) == 0 {
+			break
+		}
+		for _, it := range res.List {
+			if _, ok := seen[it.ID]; ok {
+				continue
+			}
+			seen[it.ID] = struct{}{}
+			all = append(all, it)
+		}
+		if len(res.List) < libraPageSize {
+			break
+		}
+	}
+	return all, nil
+}
+
+func (a *App) passLibraFilter(it libra.Notification) bool {
+	if len(a.cfg.Libra.FilterTypes) == 0 {
+		return true
+	}
+	for _, f := range a.cfg.Libra.FilterTypes {
+		if strings.EqualFold(f, it.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) libraPollLoop(ctx context.Context) {
+	for {
+		a.pollLibraAndLog(ctx)
+		if a.libraStopped || ctx.Err() != nil {
+			return
+		}
+		timer := time.NewTimer(a.cfg.Reminders.Interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (a *App) pollLibraAndLog(ctx context.Context) {
+	if a.libra == nil || a.libraStopped {
+		return
+	}
+	n, err := a.PollLibraOnce(ctx)
+	if err == nil {
+		a.libraFailures = 0
+		if n > 0 {
+			a.log.Info("2libra poll pushed", "count", n)
+		}
+		return
+	}
+	if errors.Is(err, libra.ErrUnauthorized) || errors.Is(err, libra.ErrInsufficientScope) {
+		a.stopLibraPolling(ctx, err)
+		return
+	}
+	a.libraFailures++
+	if a.libraFailures == 1 || a.libraFailures%10 == 0 {
+		a.log.Error("2libra poll failed", "err", err, "consecutive_failures", a.libraFailures)
+	}
+}
+
+// stopLibraPolling reports the one failure retrying cannot fix and leaves the
+// loop. Only a new authorization (and a restart) restores reminders.
+func (a *App) stopLibraPolling(ctx context.Context, cause error) {
+	if a.libraStopped {
+		return
+	}
+	a.libraStopped = true
+	text := "2libra 提醒已停止：授权已失效。请运行 --libra-auth 重新授权后重启。"
+	if errors.Is(cause, libra.ErrInsufficientScope) {
+		text = "2libra 提醒已停止：授权缺少 read:me 权限。请在 2libra「授权应用」重新授权后运行 --libra-auth，再重启。"
+	}
+	a.log.Error("2libra reminders stopped", "err", cause)
+	if a.dryRun {
+		return
+	}
+	alertCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if err := a.bot.Alert(alertCtx, text); err != nil {
+		a.log.Warn("could not send 2libra alert", "err", err)
+	}
 }
 
 func (a *App) pollAndLog(ctx context.Context) {

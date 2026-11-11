@@ -31,9 +31,23 @@ v2ex:
   # web_base_url: 'https://www.v2ex.com'
 
 libra:
-  # 2libra 签到：取 access_token= 后面的值，或直接填裸 token。
+  # 2libra 签到（旧接口）：取 access_token= 后面的值，或直接填裸 token。
   # 只保留 access_token（Cloudflare 拦截时再加上 cf_clearance）。
   cookie: ''
+  # 2libra 提醒（官方 v1 + OAuth）。在 2libra「设置 → OAuth 应用」申请：
+  # 客户端形态选「有服务端（机密客户端）」，回调地址与 redirect_uri 完全一致。
+  # 三项填好后运行一次 `--libra-auth` 完成授权；令牌落到 token_file（0600）。
+  # client_id: ''
+  # client_secret: ''
+  # redirect_uri: 'http://127.0.0.1:8973/callback'
+  # 令牌文件，默认与 state.db 同目录的 libra_token.json。
+  # token_file: '/data/libra_token.json'
+  # 授权 scope。提醒只需要这两个；不要为提醒申请 write:economy。
+  # scopes: 'profile read:me'
+  # 只推送这些类型，留空 = 全部。可选值：
+  # reply, reply_mention, mention, reaction, system, pandora, level_up,
+  # get_reward, favorite, content_check, badge_unlocked, follow, comment_pin。
+  # filter_types: [reply, mention]
   # 高级：base_url: 'https://2libra.com'
 
 checkin:
@@ -47,7 +61,7 @@ checkin:
 reminders:
   # V2EX 提醒轮询间隔，最小 5s。
   interval: 60s
-  # 每轮最多翻几页（每页 20 条）。
+  # 每轮最多翻几页（V2EX 每页 20 条，2libra 每页 50 条）。
   max_pages: 3
   # 首次运行：skip 只记录不推送，push 全部推送。
   first_run: skip

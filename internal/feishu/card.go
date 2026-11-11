@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Sunyin0818/forum-keeper/internal/libra"
 	"github.com/Sunyin0818/forum-keeper/internal/v2ex"
 )
 
@@ -611,4 +612,211 @@ func checkinIcon(e CheckinEntry) string {
 	default:
 		return "❌"
 	}
+}
+
+// --- 2libra notifications --------------------------------------------------
+
+// LibraTypeLabel is the Chinese label for a 2libra notification type. The
+// values and wording match the web client so the card reads the same.
+func LibraTypeLabel(t string) string {
+	switch t {
+	case "reply":
+		return "回复"
+	case "reply_mention":
+		return "回复并@提及"
+	case "mention":
+		return "@提及"
+	case "reaction":
+		return "表态"
+	case "system":
+		return "系统消息"
+	case "pandora":
+		return "潘多拉"
+	case "level_up":
+		return "升级提示"
+	case "get_reward":
+		return "打赏"
+	case "favorite":
+		return "收藏"
+	case "content_check":
+		return "内容检定"
+	case "badge_unlocked":
+		return "获得徽章"
+	case "follow":
+		return "新关注"
+	case "comment_pin":
+		return "评论置顶"
+	default:
+		return t
+	}
+}
+
+// BuildLibraCard renders new 2libra notifications. Every user-controlled
+// string is rendered with plain_text: the payload comes from other users'
+// posts and comments, so lark_md would allow injected links or @all mentions.
+func BuildLibraCard(items []libra.Notification, webBase string, at time.Time) Card {
+	card := Card{Config: CardConfig{WideScreenMode: true}}
+	title := fmt.Sprintf("🔔 2libra · %d 条新提醒", len(items))
+	if len(items) == 1 {
+		title = "🔔 2libra · " + LibraTypeLabel(items[0].Type)
+	}
+	card.Header = &CardHeader{Template: "blue", Title: plain(title)}
+
+	shown := items
+	truncated := 0
+	if len(shown) > maxCardItems {
+		truncated = len(shown) - maxCardItems
+		shown = shown[:maxCardItems]
+	}
+	for i, n := range shown {
+		if i > 0 {
+			card.Elements = append(card.Elements, hr())
+		}
+		card.Elements = append(card.Elements, libraElement(n, webBase))
+	}
+
+	note := fmt.Sprintf("来自 2libra · %d 条", len(items))
+	if truncated > 0 {
+		note = fmt.Sprintf("来自 2libra · 还有 %d 条未显示", truncated)
+	}
+	card.Elements = append(card.Elements, &NoteElement{
+		Tag:      "note",
+		Elements: []TextNode{{Tag: "plain_text", Content: note}},
+	})
+	return card
+}
+
+func libraElement(n libra.Notification, webBase string) *DivElement {
+	lines := make([]string, 0, 3)
+	action := libraAction(n)
+	if actor := n.Actor(); actor != "" {
+		lines = append(lines, "@"+actor+" "+action)
+	} else {
+		lines = append(lines, action)
+	}
+	title := libraTitle(n)
+	if title != "" {
+		lines = append(lines, "标题："+truncate(title, 80))
+	}
+	if body := libraBody(n); body != "" && body != title {
+		lines = append(lines, truncate(body, 300))
+	}
+	el := &DivElement{
+		Tag:  "div",
+		Text: &TextNode{Tag: "plain_text", Content: strings.Join(lines, "\n")},
+	}
+	if link := n.Link(webBase); link != "" {
+		el.Extra = &Button{Tag: "button", Text: plain("查看"), Type: "primary", URL: link}
+	}
+	return el
+}
+
+func libraAction(n libra.Notification) string {
+	switch n.Type {
+	case "reply", "reply_mention", "mention":
+		target := "帖子"
+		if n.Payload.CommentLevel != nil && *n.Payload.CommentLevel > 0 {
+			target = "评论"
+		}
+		if n.Payload.Target == "postscript" {
+			target = "附言"
+		}
+		return "回复了你的" + target
+	case "favorite":
+		return "收藏了你的帖子"
+	case "follow":
+		return "关注了你"
+	case "get_reward":
+		kind := "内容"
+		switch n.Payload.RewardType {
+		case "POST":
+			kind = "帖子"
+		case "RSS_ARTICLE":
+			kind = "博客文章"
+		case "":
+			if n.Payload.CommentText == "" {
+				kind = "帖子"
+			}
+		default:
+			kind = "评论"
+		}
+		if n.Payload.Amount != 0 {
+			return fmt.Sprintf("打赏了你的%s（%+g 金币）", kind, n.Payload.Amount)
+		}
+		return "打赏了你的" + kind
+	case "reaction":
+		if n.Payload.ReactionType == "comment" {
+			return "对你的评论表态"
+		}
+		return "对你的帖子表态"
+	case "content_check":
+		if n.Payload.ContentType == "comment" {
+			return "评论检定结果"
+		}
+		return "帖子检定结果"
+	case "comment_pin":
+		return "置顶了你的评论"
+	case "level_up":
+		return "等级提升"
+	case "badge_unlocked":
+		if n.Payload.BadgeName != "" {
+			return "获得徽章「" + n.Payload.BadgeName + "」"
+		}
+		return "获得徽章"
+	case "pandora":
+		return "潘多拉"
+	case "system":
+		return "系统消息"
+	default:
+		return LibraTypeLabel(n.Type)
+	}
+}
+
+func libraTitle(n libra.Notification) string {
+	p := n.Payload
+	switch n.Type {
+	case "reply", "reply_mention", "mention", "comment_pin", "favorite":
+		return p.PostTitle
+	case "reaction":
+		if p.ReactionType == "comment" {
+			return p.CommentText
+		}
+		return p.PostTitle
+	case "get_reward":
+		if p.RewardType == "RSS_ARTICLE" {
+			return p.PostTitle
+		}
+		if p.RewardType == "POST" || p.CommentText == "" {
+			return p.PostTitle
+		}
+		return p.CommentText
+	case "content_check":
+		return p.ContentTitle
+	case "system":
+		if p.ArticleTitle != "" {
+			return p.ArticleTitle
+		}
+		return p.PostTitle
+	case "pandora":
+		if p.EventTitle != "" {
+			return p.EventTitle
+		}
+		return p.EventName
+	default:
+		return p.PostTitle
+	}
+}
+
+func libraBody(n libra.Notification) string {
+	switch n.Type {
+	case "reply", "reply_mention", "mention", "comment_pin", "reaction":
+		return n.Payload.CommentText
+	case "get_reward":
+		if n.Payload.RewardType != "POST" && n.Payload.RewardType != "RSS_ARTICLE" {
+			return n.Payload.CommentText
+		}
+	case "system", "pandora", "follow":
+		return n.Payload.Message
+	}
+	return ""
 }

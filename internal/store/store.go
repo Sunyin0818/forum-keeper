@@ -24,6 +24,7 @@ var (
 	ptSeenBucket    = []byte("pt_seen")
 	ptPendingBucket = []byte("pt_pending")
 	ptCardBucket    = []byte("pt_card")
+	libraSeenBucket = []byte("libra_seen")
 )
 
 const (
@@ -33,7 +34,8 @@ const (
 
 // Store is a bbolt-backed state database.
 type Store struct {
-	db *bolt.DB
+	db       *bolt.DB
+	readOnly bool
 }
 
 var _ ptsite.State = (*Store)(nil)
@@ -51,7 +53,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{seenBucket, metaBucket, ptCheckinBucket, ptSeenBucket, ptPendingBucket, ptCardBucket} {
+		for _, name := range [][]byte{seenBucket, metaBucket, ptCheckinBucket, ptSeenBucket, ptPendingBucket, ptCardBucket, libraSeenBucket} {
 			if _, e := tx.CreateBucketIfNotExists(name); e != nil {
 				return e
 			}
@@ -70,7 +72,7 @@ func Open(path string) (*Store, error) {
 func OpenRead(path string) (*Store, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &Store{}, nil
+			return &Store{readOnly: true}, nil
 		}
 		return nil, fmt.Errorf("store: stat %s: %w", path, err)
 	}
@@ -78,7 +80,7 @@ func OpenRead(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s read-only: %w", path, err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, readOnly: true}, nil
 }
 
 // Close releases the database.
@@ -170,6 +172,117 @@ func (s *Store) Count() (int, error) {
 func key(id int) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, uint64(id))
+	return b
+}
+
+// --- 2libra notification state --------------------------------------------
+
+// FilterNewLibra returns the ids that have not been pushed yet, preserving
+// input order. Unlike FilterNew it works with the API's string ids.
+func (s *Store) FilterNewLibra(ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if s.db == nil {
+		out := make([]string, len(ids))
+		copy(out, ids)
+		return out, nil
+	}
+	var out []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(libraSeenBucket)
+		for _, id := range ids {
+			if b == nil || b.Get([]byte(id)) == nil {
+				out = append(out, id)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: filter libra: %w", err)
+	}
+	return out, nil
+}
+
+// MarkLibra records ids as pushed. The stored timestamp lets PruneLibraSeen
+// keep the bucket bounded.
+func (s *Store) MarkLibra(ids []string) error {
+	if s.db == nil || len(ids) == 0 {
+		return nil
+	}
+	value := unixValue(time.Now())
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(libraSeenBucket)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if err := b.Put([]byte(id), value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("store: mark libra: %w", err)
+	}
+	return nil
+}
+
+// LibraCount returns how many 2libra notification ids are recorded. Zero means
+// the feature never ran before.
+func (s *Store) LibraCount() (int, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	var n int
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		if b := tx.Bucket(libraSeenBucket); b != nil {
+			n = b.Stats().KeyN
+		}
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("store: count libra: %w", err)
+	}
+	return n, nil
+}
+
+// PruneLibraSeen drops ids older than before so the bucket does not grow
+// without bound. A zero before is a no-op.
+func (s *Store) PruneLibraSeen(before time.Time) error {
+	if s.db == nil || s.readOnly || before.IsZero() {
+		return nil
+	}
+	cutoff := before.Unix()
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(libraSeenBucket)
+		if b == nil {
+			return nil
+		}
+		var drop [][]byte
+		if err := b.ForEach(func(k, v []byte) error {
+			if len(v) == 8 && int64(binary.BigEndian.Uint64(v)) < cutoff {
+				drop = append(drop, append([]byte(nil), k...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range drop {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("store: prune libra: %w", err)
+	}
+	return nil
+}
+
+func unixValue(t time.Time) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, uint64(t.Unix()))
 	return b
 }
 
@@ -274,7 +387,10 @@ func (s *Store) metaTime(key, label string) (time.Time, error) {
 
 // --- PT site state ---------------------------------------------------------
 
-const ptFirstRunKey = "pt_first_run_done"
+const (
+	ptFirstRunKey    = "pt_first_run_done"
+	libraFirstRunKey = "libra_first_run_done"
+)
 
 type ptSeenValue struct {
 	SeenAt int64  `json:"seen_at"`
@@ -329,6 +445,37 @@ func (s *Store) SetFirstRunDone() error {
 			return err
 		}
 		return b.Put([]byte(ptFirstRunKey), []byte("1"))
+	})
+}
+
+// LibraFirstRunDone reports whether the 2libra reminder loop has recorded its
+// initial notification window. It is kept separately from the PT flag so one
+// feature starting does not suppress another's first-run behaviour.
+func (s *Store) LibraFirstRunDone() (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	var done bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(metaBucket)
+		if b != nil && b.Get([]byte(libraFirstRunKey)) != nil {
+			done = true
+		}
+		return nil
+	})
+	return done, err
+}
+
+func (s *Store) SetLibraFirstRunDone() error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(metaBucket)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(libraFirstRunKey), []byte("1"))
 	})
 }
 
@@ -406,7 +553,7 @@ func (s *Store) DeletePending(host, id string) error {
 // PrunePTSeen drops message dedupe entries older than before. It is called on
 // startup so the bucket does not grow without bound.
 func (s *Store) PrunePTSeen(before time.Time) error {
-	if s.db == nil {
+	if s.db == nil || s.readOnly {
 		return nil
 	}
 	var stale [][]byte
